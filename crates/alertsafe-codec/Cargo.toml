@@ -1,0 +1,14 @@
+[package]
+name = "alertsafe-codec"
+description = "Alert-preserving lossy codec for monitoring metrics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+alertsafe-rules = { path = "../alertsafe-rules" }
+
+[dev-dependencies]
+proptest = "1"

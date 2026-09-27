@@ -1,0 +1,10 @@
+[package]
+name = "alertsafe-rules"
+description = "Reference semantics of Prometheus-style alerting rules (decision operator D_R)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]

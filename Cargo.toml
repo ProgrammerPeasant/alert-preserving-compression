@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/alertsafe-rules", "crates/alertsafe-codec", "crates/alertsafe-bench"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Bogdan Serykh"]
+repository = "https://github.com/ProgrammerPeasant/alert-preserving-compression"
+
+[profile.release]
+debug = 1

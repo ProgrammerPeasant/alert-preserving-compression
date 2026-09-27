@@ -1,0 +1,13 @@
+[package]
+name = "alertsafe-bench"
+description = "Synthetic experiments for hypotheses H1-H3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+alertsafe-rules = { path = "../alertsafe-rules" }
+alertsafe-codec = { path = "../alertsafe-codec" }
