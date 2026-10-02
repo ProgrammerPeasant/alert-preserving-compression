@@ -15,11 +15,12 @@
 pub mod bits;
 pub mod budget;
 pub mod codec;
+pub mod rc;
 
 use alertsafe_rules::{Diff, Rule, Series};
 
 pub use budget::{plan, plan_naive, Plan};
-pub use codec::{decode, encode, Encoded, Mode};
+pub use codec::{decode, encode, encode_with, Coding, Encoded, Mode};
 
 #[derive(Clone, Debug)]
 pub struct Compressed {

@@ -109,10 +109,13 @@ bits per sample. H2 is a monotonicity statement in the margin distribution.
 2. **Codec** (`alertsafe-codec::codec`). Blocks of 128 samples. For each
    block, pick the cheapest of lossless Gorilla XOR and closed-loop DPCM on a
    grid $q = 2^e$ (rounding for gauges, floor for counters). DPCM codes
-   either the step counts or their deltas, as fixed-width zig-zag integers
-   with an escape to raw float64. The encoder checks every reconstructed
-   value against its budget, so the bound holds for the actual floating-point
-   output.
+   either the step counts or their deltas, with an escape to raw float64.
+   Every decision and residual is coded with an adaptive binary range coder
+   (`alertsafe-codec::rc`; zero flag, sign and unary bit length under a
+   context of the previous residual's magnitude), and block plans are
+   compared by their exact adaptive cost. A fixed-width format remains for
+   ablation. The encoder checks every reconstructed value against its
+   budget, so the bound holds for the actual floating-point output.
 3. **Verify and repair** (`alertsafe-codec::compress`). Decode, re-evaluate
    every protected condition with the reference semantics
    (`alertsafe-rules`), and zero the budget on the support of any condition
@@ -124,19 +127,21 @@ bits per sample. H2 is a monotonicity statement in the margin distribution.
 Bits per value, timestamps excluded. Every rule-aware row has zero changed
 decisions. Full tables, sweeps and caveats: [`docs/results.md`](docs/results.md).
 
-| dataset | rules | lossless (Gorilla) | uniform, guaranteed | uniform, tuned on data | **rule-aware** |
+| dataset | rules | lossless (Gorilla XOR) | uniform, guaranteed | uniform, tuned on data | **rule-aware** |
 |---|---|---:|---:|---:|---:|
-| cpu | `avg_over_time[5m] > 0.8 for 10m`, `max_over_time[1m] > 0.97 for 2m` | 55.63 | 12.37 | 3.80 | **1.53** |
-| latency | `avg_over_time[5m] > 0.5 for 5m`, `x > 1 for 2m keep_firing_for 5m` | 56.97 | 8.37 | 6.39 | **1.38** |
-| memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 51.70 | 14.09 | 8.10 | **1.91** |
-| requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 21.07 | 6.15 | 6.15 | **2.20** |
+| cpu | `avg_over_time[5m] > 0.8 for 10m`, `max_over_time[1m] > 0.97 for 2m` | 53.96 | 11.59 | 2.55 | **0.36** |
+| latency | `avg_over_time[5m] > 0.5 for 5m`, `x > 1 for 2m keep_firing_for 5m` | 55.24 | 7.23 | 5.20 | **0.23** |
+| memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 49.91 | 12.98 | 6.94 | **0.74** |
+| requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 19.68 | 2.18 | 2.18 | **0.49** |
 
-The synthetic data support H1 (2.5 to 8× over uniform error) and H2 (the rate
-grows with time spent near thresholds). For H3, decode runs at about 3.5
-GB/s and encode at 170 to 340 MB/s per core. The $O(n)$ budget runs at
-about 70 MB/s and the full verified `compress` at 30 to 50 MB/s (was 6 to 13
-with naive window scans). None of this counts as evidence until real traces
-and open rule sets are in.
+All columns share the entropy-coded format. The synthetic data support H1
+(4.5 to 22× over a uniform bound tuned on the data, 4.5 to 32× over the
+guaranteed one) and H2 (the rate grows with time spent near thresholds).
+Entropy coding cut the rule-aware rate 3 to 6× against fixed-width codes
+(1.4 to 2.2 bits per value). For H3, decode runs at about 2.5 GB/s and
+encode at 110 to 200 MB/s per core. The $O(n)$ budget runs at about 70 MB/s
+and the full verified `compress` at 25 to 45 MB/s. None of this counts as
+evidence until real traces and open rule sets are in.
 
 ## Novelty and positioning
 
@@ -161,8 +166,9 @@ evaluation.
 crates/
   alertsafe-rules/   decision operator D_R: supports, aggregates, Prometheus rate,
                      alert automaton, critical instants, trajectory diff
-  alertsafe-codec/   budget (Theorem 1, Prop. 1), block codec, verify-and-repair;
-                     tests/decisions.rs: property tests of the invariant
+  alertsafe-codec/   budget (Theorem 1, Prop. 1), block codec, range coder,
+                     verify-and-repair; tests/decisions.rs: property tests of
+                     the invariant; tests/codec.rs: round-trip properties
   alertsafe-bench/   seeded synthetic datasets and experiments for H1-H3
 docs/
   formal-model.md    definitions, lemmas, theorem, propositions, proofs
@@ -194,7 +200,7 @@ let restored = decode(&c.encoded.bytes);   // same alert trajectories as `series
 |---|---|
 | Sep–Oct 2026 | Literature review, positioning against Compression Safeguards and QoI work, topic approval |
 | Nov–Dec 2026 | Proofs finalised; hold-aware and δ-relaxed budgets; `quantile_over_time`, ratios, `sum by` across series |
-| Jan–Feb 2027 | ~~O(n) sliding-window budget~~ (done Oct 2026); entropy-coded residuals; remote-write proxy (tokio); oracle on a reference Prometheus via remote-read |
+| Jan–Feb 2027 | ~~O(n) sliding-window budget~~, ~~entropy-coded residuals~~ (done Oct 2026); remote-write proxy (tokio); oracle on a reference Prometheus via remote-read |
 | Mar 2027 | Real traces (cluster metrics, Alibaba/Google traces, AIOps KPI sets) with kube-prometheus and Awesome Prometheus Alerts rules; baselines: Gorilla, Chimp, ALP, SZ3, Serf, CAMEO, downsampling, Compression Safeguards |
 | Apr–Jun 2027 | Thesis text, workshop paper, defence |
 

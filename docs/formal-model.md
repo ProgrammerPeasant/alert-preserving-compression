@@ -282,8 +282,10 @@ $$
 So H1 against a *guaranteed* uniform bound is close to true by construction
 whenever alerts fire; the informative comparison is against a uniform bound
 *tuned on the data* (no guarantee), which the benchmark reports separately.
-The high-resolution formula over-predicts at low rates (below ~2 bits per
-sample, where fixed-width codes saturate at about 1 bit per sample).
+The high-resolution formula over-predicts at low rates. Fixed-width codes
+saturate at about 1 bit per sample; with adaptive entropy coding a zero
+residual costs ~0.01 bit, so the floor moves down, but $\max(0, \cdot)$ and
+model-adaptation costs keep the formula an upper estimate of the gain.
 
 **H2.** With $\varepsilon_i \propto m_R$, the per-sample rate
 $\max(0, h - \log_2 2\varepsilon_i)$ decreases with the margin, so the rate

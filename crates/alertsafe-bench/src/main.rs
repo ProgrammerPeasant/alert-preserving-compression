@@ -7,7 +7,9 @@ mod gen;
 
 use std::time::Instant;
 
-use alertsafe_codec::{alert_diff, budget, compress, decode, encode, Encoded, Mode};
+use alertsafe_codec::{
+    alert_diff, budget, compress, decode, encode, encode_with, Coding, Encoded, Mode,
+};
 use alertsafe_rules::{grid, Rule, Series};
 use gen::Dataset;
 
@@ -78,6 +80,8 @@ struct Summary {
     uniform_safe: f64,
     uniform_tuned: f64,
     rule_aware: f64,
+    /// Same plan, fixed-width residual codes (entropy-coding ablation).
+    rule_aware_fixed: f64,
     predicted_gain_bits: f64,
     repairs: usize,
     exact_share: f64,
@@ -162,6 +166,8 @@ fn summarize(ds: &Dataset, print_sweep: bool) -> Summary {
         uniform_safe: safe_enc.bits_per_value(),
         uniform_tuned: tuned(&sweep).bits_per_value,
         rule_aware: c.encoded.bits_per_value(),
+        rule_aware_fixed: encode_with(&s.vals, &c.plan.budget, mode, Coding::Fixed)
+            .bits_per_value(),
         predicted_gain_bits,
         repairs: c.repairs,
         exact_share: c.plan.budget.iter().filter(|&&b| b == 0.0).count() as f64 / s.len() as f64,
@@ -177,8 +183,8 @@ fn h1(days: f64) {
     println!("All rule-aware rows have zero changed decisions (asserted). `uniform-safe` is the largest uniform bound");
     println!("that satisfies the same sufficient condition; `uniform-tuned` is the largest uniform bound with zero");
     println!("state mismatches found by sweeping on the same data (no guarantee elsewhere).\n");
-    println!("| dataset | firings | lossless | uniform-safe | uniform-tuned | rule-aware | ×lossless | ×safe | ×tuned | predicted Δbits (safe→aware) | measured Δbits | exact samples | repairs |");
-    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    println!("| dataset | firings | lossless | uniform-safe | uniform-tuned | rule-aware | rule-aware (fixed) | ×lossless | ×safe | ×tuned | predicted Δbits (safe→aware) | measured Δbits | exact samples | repairs |");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     let sets = [
         gen::cpu(1, days, 0.8, 1.5),
         gen::latency(2, days),
@@ -189,13 +195,14 @@ fn h1(days: f64) {
     for ds in &sets {
         let r = summarize(ds, false);
         println!(
-            "| {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.1} | {:.1} | {:.1} | {:.2} | {:.2} | {:.2}% | {} |",
+            "| {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} | {:.1} | {:.1} | {:.1} | {:.2} | {:.2} | {:.2}% | {} |",
             ds.name,
             r.episodes,
             r.lossless,
             r.uniform_safe,
             r.uniform_tuned,
             r.rule_aware,
+            r.rule_aware_fixed,
             r.lossless / r.rule_aware,
             r.uniform_safe / r.rule_aware,
             r.uniform_tuned / r.rule_aware,
@@ -206,7 +213,7 @@ fn h1(days: f64) {
         );
         sweeps.push(ds);
     }
-    println!("\nValues are bits per value (timestamps excluded). Raw float64 is 64 bits.");
+    println!("\nValues are bits per value (timestamps excluded). Raw float64 is 64 bits. All columns except\n`rule-aware (fixed)` use the entropy-coded format.");
     for ds in sweeps {
         summarize(ds, true);
     }
@@ -258,8 +265,8 @@ fn best_of<T>(runs: usize, mut f: impl FnMut() -> T) -> (f64, T) {
 
 fn h3(days: f64) {
     println!("\n## H3: single-core throughput (MB/s of raw float64 input, best of 5)\n");
-    println!("| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (lossless) | end-to-end `compress` |");
-    println!("|---|---:|---:|---:|---:|---:|---:|---:|");
+    println!("| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (fixed) | decode (fixed) | encode (lossless) | end-to-end `compress` |");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for ds in [gen::cpu(1, days, 0.8, 1.5), gen::requests(4, days)] {
         let s = &ds.series;
         let g = eval_grid(s);
@@ -268,17 +275,23 @@ fn h3(days: f64) {
         let (t_plan, plan) = best_of(5, || budget::plan(s, &ds.rules, &g));
         let (t_enc, enc) = best_of(5, || encode(&s.vals, &plan.budget, plan.mode));
         let (t_dec, _) = best_of(5, || decode(&enc.bytes));
+        let (t_enc_fx, enc_fx) = best_of(5, || {
+            encode_with(&s.vals, &plan.budget, plan.mode, Coding::Fixed)
+        });
+        let (t_dec_fx, _) = best_of(5, || decode(&enc_fx.bytes));
         let zeros = vec![0.0; s.len()];
         let (t_ll, _) = best_of(5, || encode(&s.vals, &zeros, plan.mode));
         let (t_all, _) = best_of(5, || compress(s, &ds.rules, &g));
         println!(
-            "| {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |",
+            "| {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |",
             ds.name,
             s.len(),
             mb / t_naive,
             mb / t_plan,
             mb / t_enc,
             mb / t_dec,
+            mb / t_enc_fx,
+            mb / t_dec_fx,
             mb / t_ll,
             mb / t_all
         );
