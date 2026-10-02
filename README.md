@@ -102,8 +102,10 @@ bits per sample. H2 is a monotonicity statement in the margin distribution.
 1. **Budget** (`alertsafe-codec::budget`). For every rule, protected instant
    $t$ ($E$ from Lemma 2, or the grid for `rate`) and support, compute the
    tolerance $m/L$, minus a floating-point slack. For `rate`, bisect over an
-   interval enclosure. Take the minimum per sample. In counter mode, keep
-   samples around resets exact.
+   interval enclosure, seeded with the Lipschitz estimate. Take the minimum
+   per sample. In counter mode, keep samples around resets exact. Supports
+   are monotone in $t$, so window aggregates slide (two-stacks queue) and the
+   per-sample minimum is a sliding minimum over instants: $O(n)$ per rule.
 2. **Codec** (`alertsafe-codec::codec`). Blocks of 128 samples. For each
    block, pick the cheapest of lossless Gorilla XOR and closed-loop DPCM on a
    grid $q = 2^e$ (rounding for gauges, floor for counters). DPCM codes
@@ -131,10 +133,10 @@ decisions. Full tables, sweeps and caveats: [`docs/results.md`](docs/results.md)
 
 The synthetic data support H1 (2.5 to 8× over uniform error) and H2 (the rate
 grows with time spent near thresholds). For H3, decode runs at about 3.5
-GB/s and encode at 170 to 340 MB/s per core. Budget computation is the
-bottleneck at 6 to 28 MB/s (naive window scans), which is the next
-optimization target. None of this counts as evidence until real traces and
-open rule sets are in.
+GB/s and encode at 170 to 340 MB/s per core. The $O(n)$ budget runs at
+about 70 MB/s and the full verified `compress` at 30 to 50 MB/s (was 6 to 13
+with naive window scans). None of this counts as evidence until real traces
+and open rule sets are in.
 
 ## Novelty and positioning
 
@@ -171,7 +173,7 @@ docs/
 ## Usage
 
 ```sh
-cargo test --release                              # unit + property tests (6000 random cases)
+cargo test --release                              # unit + property tests (10000 random cases)
 cargo run --release -p alertsafe-bench -- all 7   # H1, H2, H3 on 7 synthetic days
 ```
 
@@ -192,7 +194,7 @@ let restored = decode(&c.encoded.bytes);   // same alert trajectories as `series
 |---|---|
 | Sep–Oct 2026 | Literature review, positioning against Compression Safeguards and QoI work, topic approval |
 | Nov–Dec 2026 | Proofs finalised; hold-aware and δ-relaxed budgets; `quantile_over_time`, ratios, `sum by` across series |
-| Jan–Feb 2027 | O(n) sliding-window budget; entropy-coded residuals; remote-write proxy (tokio); oracle on a reference Prometheus via remote-read |
+| Jan–Feb 2027 | ~~O(n) sliding-window budget~~ (done Oct 2026); entropy-coded residuals; remote-write proxy (tokio); oracle on a reference Prometheus via remote-read |
 | Mar 2027 | Real traces (cluster metrics, Alibaba/Google traces, AIOps KPI sets) with kube-prometheus and Awesome Prometheus Alerts rules; baselines: Gorilla, Chimp, ALP, SZ3, Serf, CAMEO, downsampling, Compression Safeguards |
 | Apr–Jun 2027 | Thesis text, workshop paper, defence |
 

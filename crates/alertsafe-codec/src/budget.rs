@@ -15,9 +15,10 @@
 //! extrapolation divides by the increase), so the tolerance is found by
 //! bisection over a sound interval enclosure of Prometheus' formula.
 
+use std::collections::VecDeque;
 use std::ops::Range;
 
-use alertsafe_rules::{Agg, Cmp, RateGeometry, Rule, Series};
+use alertsafe_rules::{Agg, Cmp, RateGeometry, Rule, Series, SlidingWindow};
 
 use crate::codec::Mode;
 
@@ -32,12 +33,24 @@ pub struct Plan {
 /// Budget for `series` under `rules`. Rules other than `rate` are protected at
 /// every instant (any evaluation interval and phase); `rate` rules are
 /// protected on `grid`.
+///
+/// Runs in `O(n + m)` per rule (plus a constant-length bisection per `rate`
+/// instant): supports are monotone in `t`, so window aggregates slide
+/// ([`Rule::eval_many`]) and the instants whose support contains sample `i`
+/// form a contiguous run, turning `min` over them into a sliding minimum.
+/// [`plan_naive`] is the direct `O(n * window)` definition.
 pub fn plan(series: &Series, rules: &[Rule], grid: &[i64]) -> Plan {
-    let mode = if rules.iter().any(|r| r.agg == Agg::Rate) {
-        Mode::Counter
-    } else {
-        Mode::Gauge
-    };
+    let mut budget = vec![f64::INFINITY; series.len()];
+    for rule in rules {
+        let ts_eval = instants(rule, series, grid);
+        let (supports, taus) = tolerances(rule, series, &ts_eval);
+        min_over_supports(&mut budget, &supports, &taus);
+    }
+    finish(series, rules, budget)
+}
+
+/// Direct evaluation of the budget definition, one instant at a time.
+pub fn plan_naive(series: &Series, rules: &[Rule], grid: &[i64]) -> Plan {
     let mut budget = vec![f64::INFINITY; series.len()];
     for rule in rules {
         for t in instants(rule, series, grid) {
@@ -48,6 +61,15 @@ pub fn plan(series: &Series, rules: &[Rule], grid: &[i64]) -> Plan {
             }
         }
     }
+    finish(series, rules, budget)
+}
+
+fn finish(series: &Series, rules: &[Rule], mut budget: Vec<f64>) -> Plan {
+    let mode = if rules.iter().any(|r| r.agg == Agg::Rate) {
+        Mode::Counter
+    } else {
+        Mode::Gauge
+    };
     if mode == Mode::Counter {
         // A reset is detected by `y_i < y_{i-1}`: keep both samples exact so
         // that the reconstruction has exactly the same resets.
@@ -61,10 +83,72 @@ pub fn plan(series: &Series, rules: &[Rule], grid: &[i64]) -> Plan {
     Plan { budget, mode }
 }
 
-/// Instants at which `rule` is protected.
+/// Instants at which `rule` is protected, sorted.
 pub fn instants(rule: &Rule, series: &Series, grid: &[i64]) -> Vec<i64> {
-    rule.critical_instants(&series.ts)
-        .unwrap_or_else(|| grid.to_vec())
+    rule.critical_instants(&series.ts).unwrap_or_else(|| {
+        let mut g = grid.to_vec();
+        g.sort_unstable();
+        g
+    })
+}
+
+/// Supports and tolerances `tau_R(t)` at sorted instants `ts_eval`
+/// (`+inf` where the rule yields no sample).
+pub fn tolerances(rule: &Rule, series: &Series, ts_eval: &[i64]) -> (Vec<Range<usize>>, Vec<f64>) {
+    let (ts, x) = (&series.ts, &series.vals);
+    let supports = rule.supports(ts, ts_eval);
+    let values = rule.eval_many(ts, x, ts_eval);
+    let th = rule.threshold;
+    let mut abs_sum = SlidingWindow::new(|a, b| a + b, 0.0);
+    let mut prev = 0..0;
+    let taus = supports
+        .iter()
+        .zip(&values)
+        .zip(ts_eval)
+        .map(|((r, v), &t)| {
+            let Some(v) = *v else {
+                return f64::INFINITY;
+            };
+            if v.is_nan() || th.is_nan() {
+                return 0.0;
+            }
+            match rule.agg {
+                Agg::Rate => rate_tolerance(rule, &ts[r.clone()], &x[r.clone()], t, v),
+                Agg::AvgOverTime | Agg::SumOverTime => {
+                    abs_sum.slide_map(x, &prev, r, f64::abs);
+                    prev = r.clone();
+                    lipschitz_tolerance(rule.agg, th, r.len(), abs_sum.get(), v)
+                }
+                agg => lipschitz_tolerance(agg, th, r.len(), 0.0, v),
+            }
+        })
+        .collect();
+    (supports, taus)
+}
+
+/// `budget[i] = min(budget[i], min { taus[k] : i in supports[k] })` for
+/// supports whose ends are non-decreasing in `k`, by a monotone deque.
+pub fn min_over_supports(budget: &mut [f64], supports: &[Range<usize>], taus: &[f64]) {
+    let mut deque: VecDeque<usize> = VecDeque::new();
+    // Instants `k < next` have been pushed; instants with `end <= i` popped.
+    let mut next = 0;
+    for (i, b) in budget.iter_mut().enumerate() {
+        while next < supports.len() && supports[next].start <= i {
+            if !supports[next].is_empty() {
+                while deque.back().is_some_and(|&j| taus[j] >= taus[next]) {
+                    deque.pop_back();
+                }
+                deque.push_back(next);
+            }
+            next += 1;
+        }
+        while deque.front().is_some_and(|&j| supports[j].end <= i) {
+            deque.pop_front();
+        }
+        if let Some(&j) = deque.front() {
+            *b = b.min(taus[j]);
+        }
+    }
 }
 
 /// Support of `f` at `t` and the tolerance `tau_R(t)`, or `None` if the rule
@@ -79,18 +163,22 @@ pub fn tolerance(rule: &Rule, ts: &[i64], x: &[f64], t: i64) -> Option<(Range<us
     }
     let tau = match rule.agg {
         Agg::Rate => rate_tolerance(rule, &ts[support.clone()], &x[support.clone()], t, v),
-        _ => lipschitz_tolerance(rule, &x[support.clone()], v),
+        agg => {
+            let abs_sum = x[support.clone()].iter().map(|a| a.abs()).sum();
+            lipschitz_tolerance(agg, th, support.len(), abs_sum, v)
+        }
     };
     Some((support, tau))
 }
 
-fn lipschitz_tolerance(rule: &Rule, x: &[f64], v: f64) -> f64 {
-    let th = rule.threshold;
-    let n = x.len() as f64;
-    let abs_sum: f64 = x.iter().map(|a| a.abs()).sum();
+/// Tolerance `margin / L - slack` of a Lipschitz aggregate over `n` samples
+/// whose absolute values sum to `abs_sum` (only read for `sum/avg`).
+fn lipschitz_tolerance(agg: Agg, th: f64, n: usize, abs_sum: f64, v: f64) -> f64 {
+    let n = n as f64;
     // Sup-norm Lipschitz constant of f and a bound on the rounding error of
-    // evaluating f on both the original and the reconstruction.
-    let (lip, slack) = match rule.agg {
+    // evaluating f on both the original and the reconstruction. `abs_sum` may
+    // itself carry a relative error of `n u`, far inside the factor 4.
+    let (lip, slack) = match agg {
         Agg::Last | Agg::MinOverTime | Agg::MaxOverTime => (1.0, 0.0),
         Agg::AvgOverTime => (1.0, 4.0 * (n + 2.0) * EPS * (abs_sum / n + th.abs())),
         Agg::SumOverTime => (n, 4.0 * (n + 1.0) * EPS * (abs_sum + th.abs())),
@@ -134,12 +222,38 @@ fn rate_tolerance(rule: &Rule, ts: &[i64], x: &[f64], t: i64, v: f64) -> f64 {
     if !safe(0.0) {
         return 0.0;
     }
-    let mut hi = first.abs().max(last.abs()) + 1.0;
-    if safe(hi) {
-        return hi;
+    let cap = first.abs().max(last.abs()) + 1.0;
+    if safe(cap) {
+        return cap;
     }
-    let mut lo = 0.0;
-    for _ in 0..64 {
+    // `safe` is monotone (the enclosure widens with eps). Bracket the largest
+    // safe eps geometrically around the Lipschitz estimate of Proposition 1,
+    // then bisect to a relative precision of 2^-10: a finer budget cannot
+    // change the 2^e quantization step by more than one notch in 1024.
+    let guess = ((v - th).abs() * geom.sampled / (2.0 + resets)).clamp(f64::MIN_POSITIVE, cap);
+    let (mut lo, mut hi) = if safe(guess) {
+        let mut lo = guess;
+        loop {
+            let up = (2.0 * lo).min(cap);
+            if !safe(up) {
+                break (lo, up);
+            }
+            lo = up;
+        }
+    } else {
+        let mut hi = guess;
+        loop {
+            let down = 0.5 * hi;
+            if down < f64::MIN_POSITIVE {
+                return 0.0;
+            }
+            if safe(down) {
+                break (down, hi);
+            }
+            hi = down;
+        }
+    };
+    while hi - lo > lo * (1.0 / 1024.0) {
         let mid = 0.5 * (lo + hi);
         if safe(mid) {
             lo = mid;

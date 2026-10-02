@@ -18,9 +18,12 @@ as a smoke test of the method, not as evidence for the thesis.
   the gain over lossless falls from 45× to 14×. The gain over the tuned
   uniform bound is noisy because the tuned bound itself jumps between sweep
   points.
-- H3: decode ~3.5 GB/s and encode 170–340 MB/s per core; the budget
-  computation (naive window scans, bisection for `rate`) at 6–28 MB/s and
-  the end-to-end verified `compress` at 6–13 MB/s are the bottleneck.
+- H3: decode ~3.5 GB/s and encode 170–340 MB/s per core. The `O(n)` budget
+  (sliding-window aggregates, sliding minimum over instants, seeded
+  bisection for `rate`) runs at ~70 MB/s and the end-to-end verified
+  `compress` at 30–50 MB/s. `budget (naive)` is the direct definition with
+  the same seeded bisection; the first prototype, which also bisected `rate`
+  64 times from a loose bracket, ran at 28 (cpu) and 6 (requests) MB/s.
 - The analytic budget needed zero repairs on every dataset.
 
 ## H1: rule-aware vs. uniform error bound (7 days, 15s scrape, 30s eval)
@@ -166,7 +169,7 @@ Values are bits per value (timestamps excluded). Raw float64 is 64 bits.
 
 ## H3: single-core throughput (MB/s of raw float64 input, best of 5)
 
-| dataset | samples | budget | encode (rule-aware) | decode | encode (lossless) | end-to-end `compress` |
-|---|---:|---:|---:|---:|---:|---:|
-| cpu | 40320 | 28 | 171 | 3569 | 1024 | 13 |
-| requests | 40320 | 6 | 342 | 3537 | 960 | 6 |
+| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (lossless) | end-to-end `compress` |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| cpu | 40320 | 31 | 73 | 170 | 3536 | 1112 | 31 |
+| requests | 40320 | 48 | 72 | 345 | 3516 | 984 | 50 |

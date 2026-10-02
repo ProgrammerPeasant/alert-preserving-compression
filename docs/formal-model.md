@@ -291,9 +291,17 @@ falls (and the gain over lossless grows) as the share of time spent near
 $\theta$ shrinks. This is a monotonicity statement that the benchmark checks
 by sweeping $\theta$ and the incident frequency.
 
-**H3.** The codec itself is linear-time. The budget costs
-$O(\sum_{t} |S_R(t)|)$ with naive window scans (the current code) and
-$O(n)$ with sliding-window aggregates; `rate` adds a bisection factor unless
-the closed form of Proposition 1(c) is used. Remark 2 of §4 implies that
+**H3.** The codec itself is linear-time. Computed directly, the budget costs
+$O(\sum_{t} |S_R(t)|)$. Because the instants are sorted and both ends of
+$S_R(t)$ are non-decreasing in $t$, it costs $O(n + |P_R|)$ per rule: the
+supports follow by two pointers, `sum/avg/min/max` over a sliding support by
+the two-stacks queue aggregate (amortised $O(1)$; its summation tree keeps
+the $(|S| - 1)u\sum|x_i|$ rounding bound used for the slack), and the
+instants whose support contains sample $i$ form a contiguous run
+$[a_i, b_i)$ with $a_i, b_i$ non-decreasing, so
+$\varepsilon_i = \min_{k \in [a_i, b_i)} \tau_k$ is a sliding minimum
+(monotone deque). `rate` adds a bisection per instant, seeded with the
+Lipschitz estimate of Proposition 1(c) and stopped at relative precision
+$2^{-10}$, about a dozen enclosure evaluations. Remark 2 of §4 implies that
 the natural deployment point is compaction or a buffered proxy, not a
 zero-latency inline hop.

@@ -7,7 +7,10 @@
 //! whose condition changed (verify-and-repair). The analytic budget is sound
 //! in exact arithmetic (see `docs/formal-model.md`); the repair loop turns it
 //! into an end-to-end guarantee against the reference evaluator, including
-//! floating-point effects.
+//! floating-point effects. Verification uses the sliding-window evaluator
+//! [`alertsafe_rules::Rule::eval_many`]; the property tests additionally
+//! check every protected instant with the per-instant reference
+//! [`alertsafe_rules::Rule::eval`].
 
 pub mod bits;
 pub mod budget;
@@ -15,7 +18,7 @@ pub mod codec;
 
 use alertsafe_rules::{Diff, Rule, Series};
 
-pub use budget::{plan, Plan};
+pub use budget::{plan, plan_naive, Plan};
 pub use codec::{decode, encode, Encoded, Mode};
 
 #[derive(Clone, Debug)]
@@ -64,13 +67,14 @@ pub fn flipped<'a>(
     rules
         .iter()
         .flat_map(|rule| {
-            budget::instants(rule, orig, grid)
+            let ts_eval = budget::instants(rule, orig, grid);
+            let a = rule.conditions_many(&orig.ts, &orig.vals, &ts_eval);
+            let b = rule.conditions_many(&recon.ts, &recon.vals, &ts_eval);
+            ts_eval
                 .into_iter()
-                .filter(|&t| {
-                    rule.condition(&orig.ts, &orig.vals, t)
-                        != rule.condition(&recon.ts, &recon.vals, t)
-                })
-                .map(move |t| (rule, t))
+                .zip(a.into_iter().zip(b))
+                .filter(|(_, (a, b))| a != b)
+                .map(move |(t, _)| (rule, t))
         })
         .collect()
 }

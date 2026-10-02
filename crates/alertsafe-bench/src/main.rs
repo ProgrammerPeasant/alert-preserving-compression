@@ -258,12 +258,13 @@ fn best_of<T>(runs: usize, mut f: impl FnMut() -> T) -> (f64, T) {
 
 fn h3(days: f64) {
     println!("\n## H3: single-core throughput (MB/s of raw float64 input, best of 5)\n");
-    println!("| dataset | samples | budget | encode (rule-aware) | decode | encode (lossless) | end-to-end `compress` |");
-    println!("|---|---:|---:|---:|---:|---:|---:|");
+    println!("| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (lossless) | end-to-end `compress` |");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|");
     for ds in [gen::cpu(1, days, 0.8, 1.5), gen::requests(4, days)] {
         let s = &ds.series;
         let g = eval_grid(s);
         let mb = s.len() as f64 * 8.0 / 1e6;
+        let (t_naive, _) = best_of(5, || budget::plan_naive(s, &ds.rules, &g));
         let (t_plan, plan) = best_of(5, || budget::plan(s, &ds.rules, &g));
         let (t_enc, enc) = best_of(5, || encode(&s.vals, &plan.budget, plan.mode));
         let (t_dec, _) = best_of(5, || decode(&enc.bytes));
@@ -271,9 +272,10 @@ fn h3(days: f64) {
         let (t_ll, _) = best_of(5, || encode(&s.vals, &zeros, plan.mode));
         let (t_all, _) = best_of(5, || compress(s, &ds.rules, &g));
         println!(
-            "| {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |",
+            "| {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |",
             ds.name,
             s.len(),
+            mb / t_naive,
             mb / t_plan,
             mb / t_enc,
             mb / t_dec,

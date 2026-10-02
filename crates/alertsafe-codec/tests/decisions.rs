@@ -1,7 +1,7 @@
 //! Property tests for the central invariant: rule decisions on the
 //! reconstruction equal rule decisions on the original.
 
-use alertsafe_codec::{alert_diff, budget, compress, decode, encode, flipped};
+use alertsafe_codec::{alert_diff, budget, compress, decode, encode, flipped, plan_naive};
 use alertsafe_rules::{grid, Agg, Cmp, Rule, Series};
 use proptest::prelude::*;
 
@@ -158,13 +158,57 @@ fn check_analytic(
         "flipped at {:?}",
         flips.iter().map(|f| f.1).collect::<Vec<_>>()
     );
+    // The same, checked with the per-instant reference evaluator rather than
+    // the sliding one used by `flipped`.
+    for t in budget::instants(rule, series, &g) {
+        prop_assert_eq!(
+            rule.condition(&series.ts, &series.vals, t),
+            rule.condition(&recon.ts, &recon.vals, t),
+            "reference condition flipped at {}",
+            t
+        );
+    }
     // Corollary: identical state trajectories.
     prop_assert_eq!(alert_diff(series, &recon, &rules, &g).state_mismatches, 0);
     Ok(())
 }
 
+/// The sliding-window budget equals the direct definition: bitwise for
+/// `last`, `min/max` and `rate`, up to summation order for `sum/avg`.
+fn check_fast_budget(
+    series: &Series,
+    rule: &Rule,
+    step: i64,
+    offset: i64,
+) -> Result<(), TestCaseError> {
+    let g = eval_grid(series, step, offset);
+    let rules = [rule.clone()];
+    let fast = budget::plan(series, &rules, &g).budget;
+    let naive = plan_naive(series, &rules, &g).budget;
+    let exact = !matches!(rule.agg, Agg::SumOverTime | Agg::AvgOverTime);
+    for (i, (a, b)) in fast.iter().zip(&naive).enumerate() {
+        let ok = if exact {
+            a == b
+        } else {
+            a == b || (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(rule.threshold.abs())
+        };
+        prop_assert!(ok, "sample {}: fast {} vs naive {}", i, a, b);
+    }
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    #[test]
+    fn fast_budget_matches_definition_gauge((s, r, step, off) in gauge_case()) {
+        check_fast_budget(&s, &r, step, off)?;
+    }
+
+    #[test]
+    fn fast_budget_matches_definition_rate((s, r, step, off) in counter_case()) {
+        check_fast_budget(&s, &r, step, off)?;
+    }
 
     #[test]
     fn analytic_budget_preserves_gauge_decisions((s, r, step, off) in gauge_case()) {
