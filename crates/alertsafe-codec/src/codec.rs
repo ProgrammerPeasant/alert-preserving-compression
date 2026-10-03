@@ -34,6 +34,9 @@ pub struct Encoded {
     /// Exact payload size in bits (the byte vector is padded).
     pub bits: usize,
     pub n: usize,
+    /// Last reconstructed value (`0.0` for an empty stream): the `floor` of
+    /// the next chunk in [`Mode::Counter`].
+    pub last: f64,
 }
 
 impl Encoded {
@@ -61,11 +64,26 @@ pub fn encode(vals: &[f64], budget: &[f64], mode: Mode) -> Encoded {
 }
 
 pub fn encode_with(vals: &[f64], budget: &[f64], mode: Mode, coding: Coding) -> Encoded {
+    encode_chunk(vals, budget, mode, coding, f64::NEG_INFINITY)
+}
+
+/// [`encode_with`] for a chunk that continues a series. In [`Mode::Counter`]
+/// the reconstruction is additionally kept `>= floor`, the last
+/// reconstructed value of the previous chunk, so the concatenated output is
+/// non-decreasing across chunk boundaries too; a sample below `floor` (a
+/// counter reset) is stored exactly. `floor` only constrains the encoder.
+pub fn encode_chunk(
+    vals: &[f64],
+    budget: &[f64],
+    mode: Mode,
+    coding: Coding,
+    floor: f64,
+) -> Encoded {
     assert_eq!(vals.len(), budget.len());
     assert!(vals.len() <= u32::MAX as usize);
     match coding {
-        Coding::Fixed => encode_fixed(vals, budget, mode),
-        Coding::Entropy => encode_entropy(vals, budget, mode),
+        Coding::Fixed => encode_fixed(vals, budget, mode, floor),
+        Coding::Entropy => encode_entropy(vals, budget, mode, floor),
     }
 }
 
@@ -77,7 +95,7 @@ pub fn decode(bytes: &[u8]) -> Vec<f64> {
     }
 }
 
-fn encode_fixed(vals: &[f64], budget: &[f64], mode: Mode) -> Encoded {
+fn encode_fixed(vals: &[f64], budget: &[f64], mode: Mode, mut floor: f64) -> Encoded {
     let mut w = BitWriter::new();
     w.write(0, 1);
     w.write((mode == Mode::Counter) as u64, 1);
@@ -88,7 +106,9 @@ fn encode_fixed(vals: &[f64], budget: &[f64], mode: Mode) -> Encoded {
         let lossless_bits = 1 + xor.cost(xs);
         let best = candidate_exponents(eps, mode)
             .into_iter()
-            .flat_map(|e| [false, true].map(|delta| plan_lossy(xs, eps, y_prev, e, delta, mode)))
+            .flat_map(|e| {
+                [false, true].map(|delta| plan_lossy(xs, eps, y_prev, floor, e, delta, mode))
+            })
             .min_by_key(|p| p.bits);
         match best {
             Some(p) if p.bits < lossless_bits => {
@@ -105,12 +125,14 @@ fn encode_fixed(vals: &[f64], budget: &[f64], mode: Mode) -> Encoded {
                 y_prev = *xs.last().unwrap();
             }
         }
+        floor = y_prev;
     }
     let bits = w.bit_len();
     Encoded {
         bytes: w.into_bytes(),
         bits,
         n: vals.len(),
+        last: y_prev,
     }
 }
 
@@ -251,9 +273,9 @@ fn put_lossy_entropy<S: Sink>(s: &mut S, p: &LossyPlan, e_prev: i32) {
     }
 }
 
-fn encode_entropy(vals: &[f64], budget: &[f64], mode: Mode) -> Encoded {
+fn encode_entropy(vals: &[f64], budget: &[f64], mode: Mode, mut floor: f64) -> Encoded {
     let mut out = vec![0x80 | (mode == Mode::Counter) as u8];
-    out.extend((vals.len() as u32).to_be_bytes());
+    put_varint(&mut out, vals.len() as u64);
     let mut rc = RcEncoder::new(Models::new(N_CTX), out);
     let mut y_prev = 0.0f64;
     let mut e_prev = 0i32;
@@ -271,7 +293,7 @@ fn encode_entropy(vals: &[f64], budget: &[f64], mode: Mode) -> Encoded {
         let mut best: Option<(f64, LossyPlan)> = None;
         for e in candidate_exponents(eps, mode) {
             for delta in [false, true] {
-                let p = plan_lossy(xs, eps, y_prev, e, delta, mode);
+                let p = plan_lossy(xs, eps, y_prev, floor, e, delta, mode);
                 let mut c = CostSink::new(rc.models().clone());
                 put_lossy_entropy(&mut c, &p, e_prev);
                 if best.as_ref().is_none_or(|(b, _)| c.bits < *b) {
@@ -294,19 +316,21 @@ fn encode_entropy(vals: &[f64], budget: &[f64], mode: Mode) -> Encoded {
                 y_prev = *xs.last().unwrap();
             }
         }
+        floor = y_prev;
     }
     let bytes = rc.finish();
     Encoded {
         bits: bytes.len() * 8,
         bytes,
         n: vals.len(),
+        last: y_prev,
     }
 }
 
 fn decode_entropy(bytes: &[u8]) -> Vec<f64> {
-    assert!(bytes.len() >= 5, "truncated header");
-    let n = u32::from_be_bytes(bytes[1..5].try_into().unwrap()) as usize;
-    let mut r = RcDecoder::new(Models::new(N_CTX), &bytes[5..]);
+    let mut pos = 1;
+    let n = get_varint(bytes, &mut pos) as usize;
+    let mut r = RcDecoder::new(Models::new(N_CTX), &bytes[pos..]);
     let mut out = Vec::with_capacity(n);
     let mut y_prev = 0.0f64;
     let mut e_prev = 0i32;
@@ -351,6 +375,28 @@ fn decode_entropy(bytes: &[u8]) -> Vec<f64> {
         y_prev = *out.last().unwrap();
     }
     out
+}
+
+/// LEB128.
+fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 0x80 {
+        out.push(v as u8 | 0x80);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+fn get_varint(bytes: &[u8], pos: &mut usize) -> u64 {
+    let mut v = 0u64;
+    for shift in (0..64).step_by(7) {
+        let b = *bytes.get(*pos).expect("truncated header");
+        *pos += 1;
+        v |= ((b & 0x7F) as u64) << shift;
+        if b < 0x80 {
+            return v;
+        }
+    }
+    panic!("varint overflow")
 }
 
 /// Candidate grid exponents: for each budget, the largest `e` with a
@@ -412,6 +458,7 @@ fn plan_lossy(
     xs: &[f64],
     eps: &[f64],
     mut y_prev: f64,
+    mut floor: f64,
     e: i32,
     delta: bool,
     mode: Mode,
@@ -422,7 +469,7 @@ fn plan_lossy(
     let mut max_z = 0u64;
     let mut escapes = 0usize;
     for (&x, &eb) in xs.iter().zip(eps) {
-        match quantize(x, eb, y_prev, q, mode) {
+        match quantize(x, eb, y_prev, floor, q, mode) {
             Some((k, y)) => {
                 let z = zigzag(if delta { k - k_prev } else { k });
                 max_z = max_z.max(z);
@@ -437,6 +484,7 @@ fn plan_lossy(
                 y_prev = x;
             }
         }
+        floor = y_prev;
     }
     let width = 64 - (max_z + 1).leading_zeros();
     let bits = 17 + xs.len() * width as usize + escapes * 64;
@@ -451,7 +499,9 @@ fn plan_lossy(
 }
 
 /// One closed-loop quantization step; `None` means the sample must escape.
-fn quantize(x: f64, eps: f64, y_prev: f64, q: f64, mode: Mode) -> Option<(i64, f64)> {
+/// In [`Mode::Counter`] the output must not fall below `floor` (the previous
+/// reconstruction, or the previous chunk's last one; NaN means none).
+fn quantize(x: f64, eps: f64, y_prev: f64, floor: f64, q: f64, mode: Mode) -> Option<(i64, f64)> {
     if eps.is_nan() || eps <= 0.0 || !x.is_finite() || !y_prev.is_finite() {
         return None;
     }
@@ -463,12 +513,16 @@ fn quantize(x: f64, eps: f64, y_prev: f64, q: f64, mode: Mode) -> Option<(i64, f
     if k.is_nan() || k.abs() > K_MAX || (mode == Mode::Counter && k < 0.0) {
         return None;
     }
-    let y = y_prev + k * q;
+    // Reconstruct from the integer the decoder sees: `k` may be `-0.0`, and
+    // `-0.0 + -0.0 * q` keeps the sign the decoder's `-0.0 + 0.0` drops,
+    // which would desynchronize the XOR reference of a following block.
+    let k = k as i64;
+    let y = y_prev + k as f64 * q;
     let ok = match mode {
         Mode::Gauge => (y - x).abs() <= eps,
-        Mode::Counter => y <= x && x - y <= eps && y >= y_prev,
+        Mode::Counter => y <= x && x - y <= eps && y >= y_prev && (floor.is_nan() || y >= floor),
     };
-    ok.then_some((k as i64, y))
+    ok.then_some((k, y))
 }
 
 fn zigzag(v: i64) -> u64 {

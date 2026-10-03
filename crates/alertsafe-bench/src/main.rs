@@ -1,14 +1,16 @@
 //! Synthetic experiments for H1 (gain over uniform error), H2 (gain vs. time
-//! spent away from thresholds) and H3 (codec throughput).
+//! spent away from thresholds), H3 (codec throughput), H4 (cost of short,
+//! independently decodable chunks) and H5 (signal fidelity).
 //!
-//! Usage: `alertsafe-bench [h1|h2|h3|all] [days]`
+//! Usage: `alertsafe-bench [h1|h2|h3|h4|h5|all] [days]`
 
 mod gen;
 
 use std::time::Instant;
 
 use alertsafe_codec::{
-    alert_diff, budget, compress, decode, encode, encode_with, Coding, Encoded, Mode,
+    alert_diff, budget, compress, compress_with, decode, encode, encode_chunked, encode_with,
+    Coding, Encoded, Mode, Options,
 };
 use alertsafe_rules::{grid, Rule, Series};
 use gen::Dataset;
@@ -93,7 +95,7 @@ fn summarize(ds: &Dataset, print_sweep: bool) -> Summary {
     let g = eval_grid(s);
     let c = compress(s, &ds.rules, &g);
     let mode = c.plan.mode;
-    let recon = s.with_values(decode(&c.encoded.bytes));
+    let recon = s.with_values(c.decode());
     let d = alert_diff(s, &recon, &ds.rules, &g);
     assert_eq!(
         d.state_mismatches, 0,
@@ -165,7 +167,7 @@ fn summarize(ds: &Dataset, print_sweep: bool) -> Summary {
         lossless: lossless.bits_per_value(),
         uniform_safe: safe_enc.bits_per_value(),
         uniform_tuned: tuned(&sweep).bits_per_value,
-        rule_aware: c.encoded.bits_per_value(),
+        rule_aware: c.bits_per_value(),
         rule_aware_fixed: encode_with(&s.vals, &c.plan.budget, mode, Coding::Fixed)
             .bits_per_value(),
         predicted_gain_bits,
@@ -185,12 +187,7 @@ fn h1(days: f64) {
     println!("state mismatches found by sweeping on the same data (no guarantee elsewhere).\n");
     println!("| dataset | firings | lossless | uniform-safe | uniform-tuned | rule-aware | rule-aware (fixed) | ×lossless | ×safe | ×tuned | predicted Δbits (safe→aware) | measured Δbits | exact samples | repairs |");
     println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
-    let sets = [
-        gen::cpu(1, days, 0.8, 1.5),
-        gen::latency(2, days),
-        gen::memory(3, days),
-        gen::requests(4, days),
-    ];
+    let sets = datasets(days);
     let mut sweeps = Vec::new();
     for ds in &sets {
         let r = summarize(ds, false);
@@ -298,6 +295,139 @@ fn h3(days: f64) {
     }
 }
 
+fn datasets(days: f64) -> [Dataset; 4] {
+    [
+        gen::cpu(1, days, 0.8, 1.5),
+        gen::latency(2, days),
+        gen::memory(3, days),
+        gen::requests(4, days),
+    ]
+}
+
+/// Prometheus TSDB cuts head chunks at 120 samples.
+const PROM_CHUNK: usize = 120;
+
+/// Bits per value of `vals` coded as independent streams of `chunk` samples.
+fn chunked_bits_per_value(vals: &[f64], budget: &[f64], mode: Mode, chunk: usize) -> f64 {
+    let bits: usize = encode_chunked(vals, budget, mode, chunk)
+        .iter()
+        .map(|e| e.bits)
+        .sum();
+    bits as f64 / vals.len() as f64
+}
+
+fn h4(days: f64) {
+    println!("\n## H4: independently decodable chunks ({days} days)\n");
+    println!("Every chunk is a separate stream (own header, coder flush, models reset to p = 1/2). The budget");
+    println!(
+        "is planned and verified on the whole series; `compress` asserts zero changed decisions.\n"
+    );
+    println!("| dataset | chunk | lossless | uniform-tuned | rule-aware | ×lossless | ×tuned | repairs |");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|");
+    for ds in &datasets(days) {
+        let s = &ds.series;
+        let g = eval_grid(s);
+        let mode = budget::plan(s, &ds.rules, &g).mode;
+        let eps_tuned = tuned(&uniform_sweep(s, &ds.rules, &g, mode)).eps;
+        for chunk in [PROM_CHUNK, 4 * PROM_CHUNK, 16 * PROM_CHUNK, usize::MAX] {
+            let c = compress_with(
+                s,
+                &ds.rules,
+                &g,
+                Options {
+                    chunk,
+                    ..Default::default()
+                },
+            );
+            let recon = s.with_values(c.decode());
+            assert_eq!(alert_diff(s, &recon, &ds.rules, &g).state_mismatches, 0);
+            let lossless = chunked_bits_per_value(&s.vals, &vec![0.0; s.len()], mode, chunk);
+            let tuned = chunked_bits_per_value(&s.vals, &vec![eps_tuned; s.len()], mode, chunk);
+            let aware = c.bits_per_value();
+            let label = if chunk == usize::MAX {
+                "whole".to_string()
+            } else {
+                chunk.to_string()
+            };
+            println!(
+                "| {} | {label} | {lossless:.2} | {tuned:.2} | {aware:.2} | {:.1} | {:.1} | {} |",
+                ds.name,
+                lossless / aware,
+                tuned / aware,
+                c.repairs
+            );
+        }
+    }
+}
+
+/// RMSE and maximum absolute error of `recon` against `orig`.
+fn errors(orig: &[f64], recon: &[f64]) -> (f64, f64) {
+    let (sq, max) = orig
+        .iter()
+        .zip(recon)
+        .fold((0.0, 0.0f64), |(sq, max), (x, y)| {
+            let e = (x - y).abs();
+            (sq + e * e, max.max(e))
+        });
+    ((sq / orig.len() as f64).sqrt(), max)
+}
+
+fn h5(days: f64) {
+    println!("\n## H5: signal fidelity ({days} days, {PROM_CHUNK}-sample chunks)\n");
+    println!("Errors are relative to the value range of the series. `rule-aware ≤ ε` caps every sample's");
+    println!(
+        "budget at ε on top of the rule budget (`Options::max_error`) and keeps every decision"
+    );
+    println!(
+        "(asserted); `uniform ε` rows keep decisions only where the mismatch column says so.\n"
+    );
+    println!(
+        "| dataset | codec | bits/value | RMSE / range | max error / range | state mismatches |"
+    );
+    println!("|---|---|---:|---:|---:|---:|");
+    for ds in &datasets(days) {
+        let s = &ds.series;
+        let g = eval_grid(s);
+        let range = value_range(s);
+        let mode = budget::plan(s, &ds.rules, &g).mode;
+        let eps_tuned = tuned(&uniform_sweep(s, &ds.rules, &g, mode)).eps;
+        let row = |name: String, bits: f64, recon: Vec<f64>| {
+            let (rmse, max) = errors(&s.vals, &recon);
+            let d = alert_diff(s, &s.with_values(recon), &ds.rules, &g);
+            println!(
+                "| {} | {name} | {bits:.2} | {:.1e} | {:.1e} | {} |",
+                ds.name,
+                rmse / range,
+                max / range,
+                d.state_mismatches
+            );
+            d.state_mismatches
+        };
+        for eps in [eps_tuned, 1e-3 * range] {
+            let enc = encode_chunked(&s.vals, &vec![eps; s.len()], mode, PROM_CHUNK);
+            let bits: usize = enc.iter().map(|e| e.bits).sum();
+            row(
+                format!("uniform ε = {:.1e}", eps / range),
+                bits as f64 / s.len() as f64,
+                enc.iter().flat_map(|e| decode(&e.bytes)).collect(),
+            );
+        }
+        for cap in [f64::INFINITY, eps_tuned, 1e-3 * range] {
+            let opts = Options {
+                chunk: PROM_CHUNK,
+                max_error: cap,
+            };
+            let c = compress_with(s, &ds.rules, &g, opts);
+            let name = if cap.is_finite() {
+                format!("rule-aware ≤ {:.1e}", cap / range)
+            } else {
+                "rule-aware".to_string()
+            };
+            assert_eq!(row(name, c.bits_per_value(), c.decode()), 0);
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let what = args.get(1).map(String::as_str).unwrap_or("all");
@@ -306,11 +436,15 @@ fn main() {
         "h1" => h1(days),
         "h2" => h2(days),
         "h3" => h3(days),
+        "h4" => h4(days),
+        "h5" => h5(days),
         "all" => {
             h1(days);
             h2(days);
             h3(days);
+            h4(days);
+            h5(days);
         }
-        other => eprintln!("unknown experiment {other}; expected h1, h2, h3 or all"),
+        other => eprintln!("unknown experiment {other}; expected h1, h2, h3, h4, h5 or all"),
     }
 }

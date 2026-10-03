@@ -116,6 +116,11 @@ bits per sample. H2 is a monotonicity statement in the margin distribution.
    compared by their exact adaptive cost. A fixed-width format remains for
    ablation. The encoder checks every reconstructed value against its
    budget, so the bound holds for the actual floating-point output.
+   Optionally the series is cut into independently decodable chunks
+   (Prometheus uses 120 samples) with 3–4 bytes of overhead each; counter
+   chunks continue the previous chunk's reconstruction so no spurious reset
+   appears at a boundary. An optional cap `max_error` adds a pointwise
+   bound for consumers other than the rules.
 3. **Verify and repair** (`alertsafe-codec::compress`). Decode, re-evaluate
    every protected condition with the reference semantics
    (`alertsafe-rules`), and zero the budget on the support of any condition
@@ -129,19 +134,26 @@ decisions. Full tables, sweeps and caveats: [`docs/results.md`](docs/results.md)
 
 | dataset | rules | lossless (Gorilla XOR) | uniform, guaranteed | uniform, tuned on data | **rule-aware** |
 |---|---|---:|---:|---:|---:|
-| cpu | `avg_over_time[5m] > 0.8 for 10m`, `max_over_time[1m] > 0.97 for 2m` | 53.96 | 11.59 | 2.55 | **0.36** |
-| latency | `avg_over_time[5m] > 0.5 for 5m`, `x > 1 for 2m keep_firing_for 5m` | 55.24 | 7.23 | 5.20 | **0.23** |
-| memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 49.91 | 12.98 | 6.94 | **0.74** |
-| requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 19.68 | 2.18 | 2.18 | **0.49** |
+| cpu | `avg_over_time[5m] > 0.8 for 10m`, `max_over_time[1m] > 0.97 for 2m` | 53.96 | 11.57 | 2.55 | **0.36** |
+| latency | `avg_over_time[5m] > 0.5 for 5m`, `x > 1 for 2m keep_firing_for 5m` | 55.24 | 7.22 | 5.20 | **0.22** |
+| memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 49.91 | 12.96 | 6.93 | **0.73** |
+| requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 19.68 | 2.18 | 2.17 | **0.48** |
 
 All columns share the entropy-coded format. The synthetic data support H1
-(4.5 to 22× over a uniform bound tuned on the data, 4.5 to 32× over the
+(4.5 to 24× over a uniform bound tuned on the data, 4.5 to 34× over the
 guaranteed one) and H2 (the rate grows with time spent near thresholds).
 Entropy coding cut the rule-aware rate 3 to 6× against fixed-width codes
-(1.4 to 2.2 bits per value). For H3, decode runs at about 2.5 GB/s and
-encode at 110 to 200 MB/s per core. The $O(n)$ budget runs at about 70 MB/s
-and the full verified `compress` at 25 to 45 MB/s. None of this counts as
-evidence until real traces and open rule sets are in.
+(1.4 to 2.2 bits per value). In Prometheus-sized chunks of 120 samples
+the rule-aware rate rises to 0.53–1.02 bits per value, 3 to 11× below the
+tuned uniform bound under the same chunking. The reconstruction is only
+faithful near thresholds (RMSE up to 17% of the range on gauges). With a
+pointwise cap it costs within 5% of a uniform bound of the same size. At
+ε = 10⁻³ of the range the uniform bound changes decisions on two datasets,
+while the capped rule-aware codec keeps them for at most 0.15 extra bits per
+value. For H3, decode runs at about 2.3–2.6 GB/s and encode at 100 to 185
+MB/s per core. The $O(n)$ budget runs at about 70 MB/s and the full verified
+`compress` at 26 to 44 MB/s. None of this counts as evidence until real
+traces and open rule sets are in.
 
 ## Novelty and positioning
 
@@ -169,7 +181,7 @@ crates/
   alertsafe-codec/   budget (Theorem 1, Prop. 1), block codec, range coder,
                      verify-and-repair; tests/decisions.rs: property tests of
                      the invariant; tests/codec.rs: round-trip properties
-  alertsafe-bench/   seeded synthetic datasets and experiments for H1-H3
+  alertsafe-bench/   seeded synthetic datasets and experiments H1-H5
 docs/
   formal-model.md    definitions, lemmas, theorem, propositions, proofs
   related-work.md    novelty check and positioning
@@ -180,18 +192,22 @@ docs/
 
 ```sh
 cargo test --release                              # unit + property tests (10000 random cases)
-cargo run --release -p alertsafe-bench -- all 7   # H1, H2, H3 on 7 synthetic days
+cargo run --release -p alertsafe-bench -- all 7   # H1-H5 on 7 synthetic days
 ```
 
 ```rust
-use alertsafe_codec::{compress, decode};
+use alertsafe_codec::{compress, compress_with, Options};
 use alertsafe_rules::{grid, Agg, Cmp, Rule, Series};
 
 let series = Series::new(ts, vals);
 let rules = [Rule::new("HighCPU", Agg::AvgOverTime, 300_000, Cmp::Gt, 0.8).hold(600_000)];
 let eval = grid(ts[0], *ts.last().unwrap(), 30_000);
 let c = compress(&series, &rules, &eval);
-let restored = decode(&c.encoded.bytes);   // same alert trajectories as `series`
+let restored = c.decode();   // same alert trajectories as `series`
+
+// Prometheus-sized chunks, plus a pointwise bound for dashboards.
+let opts = Options { chunk: 120, max_error: 0.01 };
+let c = compress_with(&series, &rules, &eval, opts);
 ```
 
 ## Roadmap
@@ -200,7 +216,7 @@ let restored = decode(&c.encoded.bytes);   // same alert trajectories as `series
 |---|---|
 | Sep–Oct 2026 | Literature review, positioning against Compression Safeguards and QoI work, topic approval |
 | Nov–Dec 2026 | Proofs finalised; hold-aware and δ-relaxed budgets; `quantile_over_time`, ratios, `sum by` across series |
-| Jan–Feb 2027 | ~~O(n) sliding-window budget~~, ~~entropy-coded residuals~~ (done Oct 2026); remote-write proxy (tokio); oracle on a reference Prometheus via remote-read |
+| Jan–Feb 2027 | ~~O(n) sliding-window budget~~, ~~entropy-coded residuals~~, ~~chunked streams, fidelity cap~~ (done Oct 2026); remote-write proxy (tokio); oracle on a reference Prometheus via remote-read |
 | Mar 2027 | Real traces (cluster metrics, Alibaba/Google traces, AIOps KPI sets) with kube-prometheus and Awesome Prometheus Alerts rules; baselines: Gorilla, Chimp, ALP, SZ3, Serf, CAMEO, downsampling, Compression Safeguards |
 | Apr–Jun 2027 | Thesis text, workshop paper, defence |
 

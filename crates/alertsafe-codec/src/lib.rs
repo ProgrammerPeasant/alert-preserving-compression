@@ -20,34 +20,84 @@ pub mod rc;
 use alertsafe_rules::{Diff, Rule, Series};
 
 pub use budget::{plan, plan_naive, Plan};
-pub use codec::{decode, encode, encode_with, Coding, Encoded, Mode};
+pub use codec::{decode, encode, encode_chunk, encode_with, Coding, Encoded, Mode};
+
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    /// Samples per independently decodable stream. Prometheus TSDB cuts
+    /// chunks at 120 samples; `usize::MAX` codes the series as one stream.
+    pub chunk: usize,
+    /// Upper bound on every sample's error on top of the rule budget, for
+    /// consumers other than the alert rules (dashboards, ad-hoc queries).
+    /// Lowering a budget never breaks the guarantee.
+    pub max_error: f64,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options {
+            chunk: usize::MAX,
+            max_error: f64::INFINITY,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Compressed {
-    pub encoded: Encoded,
+    /// Consecutive streams of at most [`Options::chunk`] samples each.
+    pub chunks: Vec<Encoded>,
     pub plan: Plan,
     /// Evaluations whose condition flipped under the analytic budget and were
     /// repaired. Zero whenever the analytic budget alone was sufficient.
     pub repairs: usize,
 }
 
+impl Compressed {
+    pub fn bits(&self) -> usize {
+        self.chunks.iter().map(|c| c.bits).sum()
+    }
+
+    pub fn bits_per_value(&self) -> f64 {
+        self.bits() as f64 / self.plan.budget.len().max(1) as f64
+    }
+
+    pub fn decode(&self) -> Vec<f64> {
+        self.chunks.iter().flat_map(|c| decode(&c.bytes)).collect()
+    }
+}
+
 /// Rule-aware compression of `series`: every rule's condition is identical on
 /// the original and the reconstruction at every protected instant (see
 /// [`budget::plan`]), hence the alert state trajectories are identical.
 pub fn compress(series: &Series, rules: &[Rule], grid: &[i64]) -> Compressed {
+    compress_with(series, rules, grid, Options::default())
+}
+
+/// [`compress`] with chunking and an additional error cap. The budget is
+/// still planned and verified on the whole series: windows span chunk
+/// boundaries, so the encoder needs lookahead of the longest window.
+pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Options) -> Compressed {
     let mut plan = budget::plan(series, rules, grid);
+    for b in &mut plan.budget {
+        // Written so that a NaN budget (exact sample) stays NaN.
+        if *b > opts.max_error {
+            *b = opts.max_error;
+        }
+    }
     let mut repairs = 0;
     loop {
-        let encoded = encode(&series.vals, &plan.budget, plan.mode);
-        let recon = series.with_values(decode(&encoded.bytes));
+        let chunks = encode_chunked(&series.vals, &plan.budget, plan.mode, opts.chunk);
+        let c = Compressed {
+            chunks,
+            plan,
+            repairs,
+        };
+        let recon = series.with_values(c.decode());
         let flips = flipped(series, &recon, rules, grid);
         if flips.is_empty() {
-            return Compressed {
-                encoded,
-                plan,
-                repairs,
-            };
+            return c;
         }
+        plan = c.plan;
         repairs += flips.len();
         for (rule, t) in flips {
             for b in &mut plan.budget[rule.support(&series.ts, t)] {
@@ -55,6 +105,20 @@ pub fn compress(series: &Series, rules: &[Rule], grid: &[i64]) -> Compressed {
             }
         }
     }
+}
+
+/// Codes `vals` as consecutive independent streams of at most `chunk`
+/// samples, each continuing the previous one (see [`encode_chunk`]).
+pub fn encode_chunked(vals: &[f64], budget: &[f64], mode: Mode, chunk: usize) -> Vec<Encoded> {
+    let mut floor = f64::NEG_INFINITY;
+    vals.chunks(chunk)
+        .zip(budget.chunks(chunk))
+        .map(|(xs, eps)| {
+            let e = encode_chunk(xs, eps, mode, Coding::Entropy, floor);
+            floor = e.last;
+            e
+        })
+        .collect()
 }
 
 /// Protected evaluations `(rule, t)` whose condition differs between the

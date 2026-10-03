@@ -168,6 +168,11 @@ $f_R(Y)(t) \le \theta$. Lemma 2 and Lemma 1 finish the proof. $\square$
    across $N$ series (`sum by`) has $L = N$ in the joint sup norm; per-series
    budgets must satisfy $\sum_j \varepsilon^{(j)} \le m$, which couples the
    series and requires the encoder to see the whole group.
+6. *Fidelity cap.* The condition is monotone in the budget: any
+   $\varepsilon'_i \le \varepsilon_i$ is sufficient too. So
+   $\min(\varepsilon_i, \varepsilon_{\max})$ adds a pointwise error bound for
+   consumers other than the rules (dashboards, ad-hoc queries) without
+   weakening the guarantee (`Options::max_error`).
 
 ## 5. `rate` and counters (Proposition 1)
 
@@ -213,7 +218,11 @@ This happens only for counters within $\varepsilon$ of zero.
 *Proof sketch.* (a) Example: $x = (10, 20, 20)$ has no reset; $y = (10, 20, 20 - \eta)$
 has one and $\Delta$ jumps from $10$ to $\approx 30$ for any $\eta > 0$.
 (b) By induction: $x_i - y_{i-1} \ge x_{i-1} - y_{i-1} \ge 0$, so the step
-count is non-negative, and floor gives the error bound. (c) Direct from the
+count is non-negative, and floor gives the error bound. Chunked streams
+(each chunk decodable on its own, the predictor restarting at $0$) break
+the induction at chunk boundaries; the encoder restores it by also requiring
+$y_i \ge y_{j}$ for the last reconstruction $y_j$ of the previous chunk,
+falling back to the exact value otherwise. (c) Direct from the
 formula and the min inequality. (d) Direct. $\square$
 
 The implementation (`budget::rate_enclosure`) does not use the global

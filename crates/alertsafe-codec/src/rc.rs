@@ -51,27 +51,58 @@ impl Source for BitReader {
     }
 }
 
-/// Probabilities (of a zero bit) for every context.
+/// Probability of a zero bit and number of bits seen (saturating).
+#[derive(Clone, Copy)]
+struct Prob {
+    p: u16,
+    n: u8,
+}
+
+impl Prob {
+    /// Exponential decay with a rate that starts at 1/2 and slows to
+    /// `2^-MOVE_BITS`: the `k`-th update moves by about `1/(k+1)`, like a
+    /// count-based (Krichevsky–Trofimov) estimate, so a fresh context learns
+    /// within a few bits. This matters for short streams such as 120-sample
+    /// chunks, where a fixed slow rate spends much of the stream learning.
+    #[inline]
+    fn update(&mut self, b: bool) {
+        let shift = if self.n < RATE_SATURATION {
+            self.n += 1;
+            31 - (self.n as u32 + 1).leading_zeros()
+        } else {
+            MOVE_BITS
+        };
+        if b {
+            self.p -= self.p >> shift;
+        } else {
+            self.p += ((PROB_ONE - self.p as u32) >> shift) as u16;
+        }
+    }
+}
+
+/// Count after which the rate stays at `2^-MOVE_BITS`.
+const RATE_SATURATION: u8 = (1 << MOVE_BITS) - 2;
+
+/// Adaptive probabilities for every context.
 #[derive(Clone)]
-pub struct Models(Vec<u16>);
+pub struct Models(Vec<Prob>);
 
 impl Models {
     pub fn new(n: usize) -> Self {
-        Models(vec![(PROB_ONE / 2) as u16; n])
-    }
-
-    #[inline]
-    fn update(p: &mut u16, b: bool) {
-        if b {
-            *p -= *p >> MOVE_BITS;
-        } else {
-            *p += ((PROB_ONE - *p as u32) >> MOVE_BITS) as u16;
-        }
+        Models(vec![
+            Prob {
+                p: (PROB_ONE / 2) as u16,
+                n: 0
+            };
+            n
+        ])
     }
 }
 
 pub struct RcEncoder {
     models: Models,
+    /// Length of the prefix of `out` written before the coder started.
+    start: usize,
     low: u64,
     range: u32,
     cache: u8,
@@ -83,6 +114,7 @@ impl RcEncoder {
     pub fn new(models: Models, out: Vec<u8>) -> Self {
         RcEncoder {
             models,
+            start: out.len(),
             low: 0,
             range: u32::MAX,
             cache: 0,
@@ -95,9 +127,30 @@ impl RcEncoder {
         &self.models
     }
 
+    /// Flushes the coder with as few bytes as possible. The decoder reads
+    /// zeros past the end of its input, so any value in `[low, low + range)`
+    /// identifies the stream: the encoder picks the one with the most
+    /// trailing zero bits and drops the trailing zero bytes. The first byte
+    /// of an LZMA-style coder is always zero (the interval never leaves
+    /// `[0, 2^32)` of its initial position) and is dropped too.
     pub fn finish(mut self) -> Vec<u8> {
+        let end = self.low + self.range as u64;
+        let k = (0..=32u32)
+            .rev()
+            .find(|&k| {
+                let mask = (1u64 << k) - 1;
+                (self.low + mask) & !mask < end
+            })
+            .unwrap();
+        let mask = (1u64 << k) - 1;
+        self.low = (self.low + mask) & !mask;
         for _ in 0..5 {
             self.shift_low();
+        }
+        debug_assert_eq!(self.out[self.start], 0);
+        self.out.remove(self.start);
+        while self.out.len() > self.start && self.out.last() == Some(&0) {
+            self.out.pop();
         }
         self.out
     }
@@ -132,15 +185,15 @@ impl RcEncoder {
 impl Sink for RcEncoder {
     #[inline]
     fn bit(&mut self, ctx: usize, b: bool) {
-        let p = &mut self.models.0[ctx];
-        let bound = (self.range >> PROB_BITS) * *p as u32;
+        let m = &mut self.models.0[ctx];
+        let bound = (self.range >> PROB_BITS) * m.p as u32;
         if b {
             self.low += bound as u64;
             self.range -= bound;
         } else {
             self.range = bound;
         }
-        Models::update(p, b);
+        m.update(b);
         self.normalize();
     }
 
@@ -174,7 +227,8 @@ impl<'a> RcDecoder<'a> {
             range: u32::MAX,
             code: 0,
         };
-        for _ in 0..5 {
+        // The always-zero first byte is not stored (see `RcEncoder::finish`).
+        for _ in 0..4 {
             d.code = (d.code << 8) | d.next_byte() as u32;
         }
         d
@@ -199,8 +253,8 @@ impl<'a> RcDecoder<'a> {
 impl Source for RcDecoder<'_> {
     #[inline]
     fn bit(&mut self, ctx: usize) -> bool {
-        let p = &mut self.models.0[ctx];
-        let bound = (self.range >> PROB_BITS) * *p as u32;
+        let m = &mut self.models.0[ctx];
+        let bound = (self.range >> PROB_BITS) * m.p as u32;
         let b = self.code >= bound;
         if b {
             self.code -= bound;
@@ -208,7 +262,7 @@ impl Source for RcDecoder<'_> {
         } else {
             self.range = bound;
         }
-        Models::update(p, b);
+        m.update(b);
         self.normalize();
         b
     }
@@ -256,10 +310,10 @@ fn cost_table() -> &'static [f32] {
 impl Sink for CostSink {
     #[inline]
     fn bit(&mut self, ctx: usize, b: bool) {
-        let p = &mut self.models.0[ctx];
-        let p_b = if b { PROB_ONE - *p as u32 } else { *p as u32 };
+        let m = &mut self.models.0[ctx];
+        let p_b = if b { PROB_ONE - m.p as u32 } else { m.p as u32 };
         self.bits += cost_table()[(p_b >> 3) as usize] as f64;
-        Models::update(p, b);
+        m.update(b);
     }
 
     fn raw(&mut self, _v: u64, n: u32) {

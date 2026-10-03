@@ -1,7 +1,9 @@
 //! Property tests for the central invariant: rule decisions on the
 //! reconstruction equal rule decisions on the original.
 
-use alertsafe_codec::{alert_diff, budget, compress, decode, encode, flipped, plan_naive};
+use alertsafe_codec::{
+    alert_diff, budget, compress_with, decode, encode_chunked, flipped, plan_naive, Options,
+};
 use alertsafe_rules::{grid, Agg, Cmp, Rule, Series};
 use proptest::prelude::*;
 
@@ -132,17 +134,27 @@ fn counter_case() -> impl Strategy<Value = (Series, Rule, i64, i64)> {
     })
 }
 
+/// Whole series or independent streams of 1..150 samples.
+fn chunk_len() -> impl Strategy<Value = usize> {
+    prop_oneof![Just(usize::MAX), 1usize..150]
+}
+
 fn check_analytic(
     series: &Series,
     rule: &Rule,
     step: i64,
     offset: i64,
+    chunk: usize,
 ) -> Result<(), TestCaseError> {
     let g = eval_grid(series, step, offset);
     let rules = [rule.clone()];
     let plan = budget::plan(series, &rules, &g);
-    let enc = encode(&series.vals, &plan.budget, plan.mode);
-    let recon = series.with_values(decode(&enc.bytes));
+    let recon = series.with_values(
+        encode_chunked(&series.vals, &plan.budget, plan.mode, chunk)
+            .iter()
+            .flat_map(|e| decode(&e.bytes))
+            .collect(),
+    );
     for i in 0..series.len() {
         let err = (recon.vals[i] - series.vals[i]).abs();
         prop_assert!(
@@ -211,25 +223,38 @@ proptest! {
     }
 
     #[test]
-    fn analytic_budget_preserves_gauge_decisions((s, r, step, off) in gauge_case()) {
-        check_analytic(&s, &r, step, off)?;
+    fn analytic_budget_preserves_gauge_decisions(
+        (s, r, step, off) in gauge_case(),
+        chunk in chunk_len(),
+    ) {
+        check_analytic(&s, &r, step, off, chunk)?;
     }
 
+    /// With chunks, this also checks that the counter output stays monotone
+    /// across chunk boundaries (a drop would be a spurious reset for `rate`).
     #[test]
-    fn analytic_budget_preserves_rate_decisions((s, r, step, off) in counter_case()) {
-        check_analytic(&s, &r, step, off)?;
+    fn analytic_budget_preserves_rate_decisions(
+        (s, r, step, off) in counter_case(),
+        chunk in chunk_len(),
+    ) {
+        check_analytic(&s, &r, step, off, chunk)?;
     }
 
     #[test]
     fn compress_preserves_trajectories_for_rule_sets(
         (s, r1, step, off) in gauge_case(),
         extra in prop_oneof![Just(Agg::AvgOverTime), Just(Agg::MaxOverTime)],
+        chunk in chunk_len(),
+        cap in prop_oneof![Just(f64::INFINITY), (-4i32..2).prop_map(|e| 10f64.powi(e))],
     ) {
         let g = eval_grid(&s, step, off);
         let r2 = Rule::new("extra", extra, r1.range_ms * 2, r1.cmp, r1.threshold * 0.9).hold(r1.for_ms);
         let rules = [r1, r2];
-        let c = compress(&s, &rules, &g);
-        let recon = s.with_values(decode(&c.encoded.bytes));
+        let c = compress_with(&s, &rules, &g, Options { chunk, max_error: cap });
+        let ys = c.decode();
+        prop_assert_eq!(ys.len(), s.len());
+        prop_assert!(s.vals.iter().zip(&ys).all(|(x, y)| (x - y).abs() <= cap));
+        let recon = s.with_values(ys);
         prop_assert_eq!(alert_diff(&s, &recon, &rules, &g), Default::default());
     }
 }
