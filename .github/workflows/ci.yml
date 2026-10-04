@@ -1,14 +1,53 @@
 name: ci
 on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  test:
+  fmt:
+    name: rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: rustfmt
       - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --release -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: cargo test --release
-      - run: cargo run --release -p alertsafe-bench -- h1 1
+
+  bench:
+    name: bench ${{ matrix.experiment }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        experiment: [h1, h2, h3, h4, h5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench
+      - name: run ${{ matrix.experiment }} (1 synthetic day)
+        run: cargo run --release -p alertsafe-bench -- ${{ matrix.experiment }} 1 | tee -a "$GITHUB_STEP_SUMMARY"
