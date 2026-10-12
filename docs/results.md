@@ -1,6 +1,6 @@
 # Results (synthetic data)
 
-Produced by `cargo run --release -p alertsafe-bench -- all 7` on one core of a
+Produced by `cargo run --release -p alertsafe-bench -- all 7` (H6: see its section) on one core of a
 desktop CPU (Linux 6.18, rustc 1.93). Data are seeded synthetic series from
 `crates/alertsafe-bench/src/gen.rs`; they are placeholders for real cluster
 traces and open rule sets (see the roadmap in the README). Treat the numbers
@@ -57,6 +57,28 @@ as a smoke test of the method, not as evidence for the thesis.
   The capped rule-aware codec keeps every decision for 0.03–0.15 extra bits
   per value.
 - The analytic budget needed zero repairs on every dataset and chunk size.
+- H6 (Compression Safeguards, the closest related work): SZ3 wrapped in
+  safeguards translated from the rules keeps every decision at every point
+  of the sweep, on all four datasets, and it **beats the analytic
+  rule-aware budget** on the gauges (0.16 vs 0.36, 0.20 vs 0.22, 0.57 vs
+  0.73 bits per value). The best configuration is almost always SZ3 with a
+  bound as large as the range, i.e. the safeguards' corrections do all the
+  work. The backends are not the reason: at ε = range our coder costs
+  0.01–0.20 bits per value, like SZ3. The reason is that the Theorem 1
+  budget is a box that holds for the worst case of all errors at once,
+  while the safeguards correct only the evaluations that actually changed.
+  Even the heuristic `rate` translation (no extrapolation, see `run.py`)
+  never changed a decision on the synthetic counter. The safeguards are
+  1–35 s per 40k samples (`memory`: 121-sample stencils) against ~10 ms
+  for the codec.
+- H7 answers H6 inside the codec: scale the analytic budget by κ and let
+  verify-and-repair halve it on the supports of the flipped evaluations
+  only, never below the analytic budget. At κ = 1024 this needs 12–23
+  rounds (one encode + verify each; all 24 runs of H7 take 1.5 s) and gives
+  0.10–0.45 bits per value: 1.3–2.0× below SZ3+SG and 1.1–3× below the
+  analytic budget, with the same end-to-end guarantee. The analytic budget
+  remains what makes the first round sound and bounds the repair (Theorem 1
+  guarantees that a support entirely within it cannot flip).
 
 ## H1: rule-aware vs. uniform error bound (7 days, 15s scrape, 30s eval)
 
@@ -259,3 +281,118 @@ budget at ε on top of the rule budget (`Options::max_error`) and keeps every de
 | requests | rule-aware | 1.02 | 5.2e-4 | 1.4e-3 | 0 |
 | requests | rule-aware ≤ 3.8e-6 | 3.13 | 1.5e-6 | 2.6e-6 | 0 |
 | requests | rule-aware ≤ 1.0e-3 | 1.09 | 3.3e-4 | 6.8e-4 | 0 |
+
+## H6: Compression Safeguards baseline (7 days)
+
+Reproduce with `alertsafe-bench export DIR 7`, `uv run baselines/safeguards/run.py DIR`,
+`alertsafe-bench h6 DIR 7` (compression-safeguards 1.0.0rc3, numcodecs-safeguards
+0.1.0rc3, SZ3 via numcodecs-wasm-sz3 0.8.4). Translation of each rule into
+safeguards: module docstring of `run.py`.
+
+`SZ3` is SZ3 with an absolute error bound; `SZ3+SG` wraps it in safeguards translated from the rules
+(see `baselines/safeguards/run.py`); both are swept over the SZ3 bound. `tuned` = largest bound with no
+changed decision and none below it; `SZ3+SG best` = smallest output with zero state mismatches, if any.
+`rule-aware κ` is the optimistic budget with a posteriori repair (H7).
+Mismatches are counted by the reference evaluator of this repository.
+
+| dataset | lossless (ours) | uniform-tuned (ours) | rule-aware (ours) | rule-aware κ=1024 (ours) | SZ3 tuned | SZ3+SG best | SZ3+SG ε / range | SZ3+SG points with mismatches | SZ3+SG encode, s (mean) | ×SZ3+SG |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| cpu | 53.96 | 2.55 | 0.36 | 0.12 | 3.72 | 0.16 | 1.0e0 | 0/13 | 1.7 | 1.3 |
+| latency | 55.24 | 5.20 | 0.22 | 0.10 | 4.65 | 0.20 | 1.0e0 | 0/13 | 1.1 | 2.0 |
+| memory | 49.91 | 6.93 | 0.73 | 0.38 | 9.11 | 0.57 | 1.0e0 | 0/13 | 35.1 | 1.5 |
+| requests | 19.68 | 2.17 | 0.48 | 0.45 | 2.65 | 0.69 | 6.1e-5 | 0/13 | 3.1 | 1.5 |
+
+Values are bits per value (timestamps excluded). `×SZ3+SG` = SZ3+SG best / rule-aware κ=1024.
+
+<details><summary>SZ3 / SZ3+SG sweep, <code>cpu</code></summary>
+
+| ε / range | SZ3 bits/value | SZ3 mismatches | SZ3+SG bits/value | SZ3+SG mismatches | SZ3+SG encode, s |
+|---:|---:|---:|---:|---:|---:|
+| 6.0e-8 | 59.93 | 0 | 59.93 | 0 | 0.0 |
+| 2.4e-7 | 59.93 | 0 | 59.93 | 0 | 0.0 |
+| 9.5e-7 | 59.93 | 0 | 59.93 | 0 | 0.0 |
+| 3.8e-6 | 59.93 | 0 | 59.93 | 0 | 0.0 |
+| 1.5e-5 | 20.05 | 0 | 20.05 | 0 | 0.0 |
+| 6.1e-5 | 14.93 | 0 | 14.94 | 0 | 0.0 |
+| 2.4e-4 | 8.93 | 0 | 8.96 | 0 | 3.2 |
+| 9.8e-4 | 6.19 | 0 | 6.23 | 0 | 3.2 |
+| 3.9e-3 | 3.72 | 0 | 3.79 | 0 | 3.1 |
+| 1.6e-2 | 1.94 | 9 | 2.06 | 0 | 3.1 |
+| 6.2e-2 | 0.67 | 20 | 0.83 | 0 | 3.0 |
+| 2.5e-1 | 0.32 | 368 | 0.48 | 0 | 3.0 |
+| 1.0e0 | 0.03 | 178 | 0.16 | 0 | 3.0 |
+
+</details>
+
+<details><summary>SZ3 / SZ3+SG sweep, <code>latency</code></summary>
+
+| ε / range | SZ3 bits/value | SZ3 mismatches | SZ3+SG bits/value | SZ3+SG mismatches | SZ3+SG encode, s |
+|---:|---:|---:|---:|---:|---:|
+| 6.0e-8 | 59.95 | 0 | 59.95 | 0 | 0.0 |
+| 2.4e-7 | 59.95 | 0 | 59.95 | 0 | 0.0 |
+| 9.5e-7 | 59.95 | 0 | 59.95 | 0 | 0.0 |
+| 3.8e-6 | 26.86 | 0 | 26.86 | 0 | 0.0 |
+| 1.5e-5 | 16.82 | 0 | 16.83 | 0 | 0.0 |
+| 6.1e-5 | 10.18 | 0 | 10.18 | 0 | 0.0 |
+| 2.4e-4 | 7.10 | 0 | 7.10 | 0 | 0.0 |
+| 9.8e-4 | 4.65 | 0 | 4.65 | 0 | 0.0 |
+| 3.9e-3 | 2.52 | 1 | 2.59 | 0 | 2.7 |
+| 1.6e-2 | 0.94 | 4 | 1.06 | 0 | 2.8 |
+| 6.2e-2 | 0.25 | 16 | 0.45 | 0 | 2.8 |
+| 2.5e-1 | 0.07 | 120 | 0.34 | 0 | 2.8 |
+| 1.0e0 | 0.03 | 257 | 0.20 | 0 | 2.9 |
+
+</details>
+
+<details><summary>SZ3 / SZ3+SG sweep, <code>memory</code></summary>
+
+| ε / range | SZ3 bits/value | SZ3 mismatches | SZ3+SG bits/value | SZ3+SG mismatches | SZ3+SG encode, s |
+|---:|---:|---:|---:|---:|---:|
+| 6.0e-8 | 59.40 | 0 | 59.40 | 0 | 0.7 |
+| 2.4e-7 | 59.40 | 0 | 59.40 | 0 | 0.5 |
+| 9.5e-7 | 59.40 | 0 | 59.40 | 0 | 0.6 |
+| 3.8e-6 | 23.11 | 0 | 23.11 | 0 | 0.6 |
+| 1.5e-5 | 13.03 | 0 | 13.03 | 0 | 0.6 |
+| 6.1e-5 | 9.11 | 0 | 9.11 | 0 | 0.6 |
+| 2.4e-4 | 6.51 | 12 | 6.62 | 0 | 79.0 |
+| 9.8e-4 | 4.28 | 14 | 4.47 | 0 | 87.4 |
+| 3.9e-3 | 2.28 | 55 | 2.70 | 0 | 64.9 |
+| 1.6e-2 | 0.72 | 279 | 1.62 | 0 | 56.5 |
+| 6.2e-2 | 0.26 | 845 | 0.81 | 0 | 55.2 |
+| 2.5e-1 | 0.13 | 4284 | 0.58 | 0 | 55.6 |
+| 1.0e0 | 0.06 | 12856 | 0.57 | 0 | 54.2 |
+
+</details>
+
+<details><summary>SZ3 / SZ3+SG sweep, <code>requests</code></summary>
+
+| ε / range | SZ3 bits/value | SZ3 mismatches | SZ3+SG bits/value | SZ3+SG mismatches | SZ3+SG encode, s |
+|---:|---:|---:|---:|---:|---:|
+| 6.0e-8 | 7.03 | 0 | 7.03 | 0 | 0.0 |
+| 2.4e-7 | 4.75 | 0 | 4.77 | 0 | 3.3 |
+| 9.5e-7 | 2.65 | 0 | 2.67 | 0 | 3.3 |
+| 3.8e-6 | 1.23 | 29 | 1.27 | 0 | 3.3 |
+| 1.5e-5 | 0.58 | 145 | 0.69 | 0 | 3.4 |
+| 6.1e-5 | 0.42 | 21 | 0.69 | 0 | 3.5 |
+| 2.4e-4 | 0.26 | 140 | 0.90 | 0 | 3.3 |
+| 9.8e-4 | 0.18 | 201 | 1.00 | 0 | 3.2 |
+| 3.9e-3 | 0.09 | 215 | 1.15 | 0 | 3.3 |
+| 1.6e-2 | 0.09 | 300 | 1.31 | 0 | 3.3 |
+| 6.2e-2 | 0.05 | 20189 | 0.92 | 0 | 3.3 |
+| 2.5e-1 | 0.04 | 20189 | 0.87 | 0 | 3.3 |
+| 1.0e0 | 0.03 | 20189 | 0.85 | 0 | 3.3 |
+
+</details>
+
+## H7: optimistic budget with a posteriori repair (7 days)
+
+Bits per value with the analytic budget scaled by κ, then repaired: on every flipped evaluation the
+budget on its support is halved, never below the analytic one, and zeroed if already there. In
+parentheses: repair rounds (one encode + verify each). Zero changed decisions everywhere (asserted).
+
+| dataset | κ=1 (analytic) | κ=2 | κ=4 | κ=16 | κ=64 | κ=1024 |
+|---|---:|---:|---:|---:|---:|---:|
+| cpu | 0.36 (0) | 0.23 (1) | 0.18 (0) | 0.14 (3) | 0.14 (10) | 0.12 (15) |
+| latency | 0.22 (0) | 0.17 (1) | 0.15 (3) | 0.11 (7) | 0.10 (10) | 0.10 (15) |
+| memory | 0.73 (0) | 0.61 (2) | 0.51 (6) | 0.44 (10) | 0.43 (16) | 0.38 (23) |
+| requests | 0.48 (0) | 0.57 (2) | 0.45 (3) | 0.45 (6) | 0.45 (8) | 0.45 (12) |

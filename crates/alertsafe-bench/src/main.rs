@@ -1,10 +1,15 @@
 //! Synthetic experiments for H1 (gain over uniform error), H2 (gain vs. time
 //! spent away from thresholds), H3 (codec throughput), H4 (cost of short,
-//! independently decodable chunks) and H5 (signal fidelity).
+//! independently decodable chunks), H5 (signal fidelity), H6 (Compression
+//! Safeguards baseline, see [`safeguards`]) and H7 (optimistic budget with a
+//! posteriori repair, see [`relax`]).
 //!
-//! Usage: `alertsafe-bench [h1|h2|h3|h4|h5|all] [days]`
+//! Usage: `alertsafe-bench [h1|h2|h3|h4|h5|h7|all] [days]`,
+//! `alertsafe-bench [export|h6] DIR [days]`
 
 mod gen;
+mod relax;
+mod safeguards;
 
 use std::time::Instant;
 
@@ -431,6 +436,20 @@ fn h5(days: f64) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let what = args.get(1).map(String::as_str).unwrap_or("all");
+    if let "export" | "h6" = what {
+        let Some(dir) = args.get(2) else {
+            eprintln!("usage: alertsafe-bench {what} DIR [days]");
+            std::process::exit(2);
+        };
+        let days: f64 = args.get(3).and_then(|d| d.parse().ok()).unwrap_or(1.0);
+        let dir = std::path::Path::new(dir);
+        if what == "export" {
+            safeguards::export(dir, days);
+        } else {
+            safeguards::h6(dir, days);
+        }
+        return;
+    }
     let days: f64 = args.get(2).and_then(|d| d.parse().ok()).unwrap_or(7.0);
     match what {
         "h1" => h1(days),
@@ -438,13 +457,19 @@ fn main() {
         "h3" => h3(days),
         "h4" => h4(days),
         "h5" => h5(days),
+        "h7" => relax::h7(days),
         "all" => {
             h1(days);
             h2(days);
             h3(days);
             h4(days);
             h5(days);
+            relax::h7(days);
         }
-        other => eprintln!("unknown experiment {other}; expected h1, h2, h3, h4, h5 or all"),
+        other => {
+            eprintln!(
+                "unknown experiment {other}; expected h1, h2, h3, h4, h5, h7, all, export or h6"
+            )
+        }
     }
 }

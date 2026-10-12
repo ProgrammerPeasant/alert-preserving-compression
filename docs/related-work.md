@@ -34,11 +34,20 @@ rules as the correctness criterion of lossy compression.
    QoI error propagation. Present it as an instantiation, and put the
    weight on what is specific: per-sample budget as a minimum over
    overlapping windows, lookahead, strictness/ties, floating-point soundness.
-3. **Add a baseline:** Compression Safeguards (`sign` + `qoi_eb_stencil`
-   wrapping SZ3 or ZFP) on regularly resampled series. This is the most
-   likely reviewer objection; the thesis should show where it cannot
-   express the rule (hold, `rate`, irregular timestamps) and how it compares
-   where it can.
+3. **Baseline added (H6, Oct 2026):** Compression Safeguards
+   (`qoi_eb_stencil` / `qoi_eb_pw` with the comparison itself as the QoI
+   and bound 0, wrapping SZ3), one stencil per window length the rule reads
+   at any phase, truncated windows selected by position. Findings on the
+   synthetic data: it preserves every decision of `avg/max_over_time` and
+   `last` rules by construction, and even a heuristic `rate` translation
+   (no extrapolation) changed nothing; it beats the purely analytic budget
+   on gauges; it is 2–3 orders of magnitude slower. Hold (`for`) needs no
+   translation because equal conditions imply equal trajectories, so the
+   claimed gap "no temporal semantics" is weak for decision preservation.
+   What remains specific: phase robustness without knowing window lengths
+   in samples, exact `rate`/reset semantics, speed/streaming, and the
+   analytic budget as the sound starting point and floor of the repair
+   loop (H7: optimistic budget + repair is 1.3–2× smaller than SZ3+SG).
 
 ## Still to search before topic approval
 

@@ -1,6 +1,6 @@
 [package]
 name = "alertsafe-bench"
-description = "Synthetic experiments for hypotheses H1-H3"
+description = "Synthetic experiments for hypotheses H1-H7"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

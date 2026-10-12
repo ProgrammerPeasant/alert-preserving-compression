@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        experiment: [h1, h2, h3, h4, h5]
+        experiment: [h1, h2, h3, h4, h5, h7]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -51,3 +51,20 @@ jobs:
           shared-key: bench
       - name: run ${{ matrix.experiment }} (1 synthetic day)
         run: cargo run --release -p alertsafe-bench -- ${{ matrix.experiment }} 1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+  safeguards:
+    name: bench h6 (Compression Safeguards baseline)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench
+      - uses: astral-sh/setup-uv@v6
+      - name: run h6 (1 synthetic day)
+        run: |
+          cargo run --release -p alertsafe-bench -- export h6 1
+          uv run baselines/safeguards/run.py h6
+          cargo run --release -p alertsafe-bench -- h6 h6 1 | tee -a "$GITHUB_STEP_SUMMARY"

@@ -152,8 +152,16 @@ pointwise cap it costs within 5% of a uniform bound of the same size. At
 while the capped rule-aware codec keeps them for at most 0.15 extra bits per
 value. For H3, decode runs at about 2.3–2.6 GB/s and encode at 100 to 185
 MB/s per core. The $O(n)$ budget runs at about 70 MB/s and the full verified
-`compress` at 26 to 44 MB/s. None of this counts as evidence until real
-traces and open rule sets are in.
+`compress` at 26 to 44 MB/s.
+
+**Against Compression Safeguards (H6, H7).** SZ3 wrapped in safeguards
+translated from the rules keeps every decision and beats the analytic
+budget on the gauges (0.16–0.57 vs 0.22–0.73 bits per value): the Theorem 1
+budget is a worst-case box, while the safeguards correct only the
+evaluations that actually change. An optimistic budget (κ = 1024 × the
+analytic one) with a posteriori repair on the flipped supports closes the
+gap: 0.10–0.45 bits per value, 1.3–2.0× below SZ3+SG, and 10–100× faster.
+None of this counts as evidence until real traces and open rule sets are in.
 
 ## Novelty and positioning
 
@@ -165,7 +173,10 @@ The closest work is **Compression Safeguards** (Tyree et al., 2026). Its
 threshold test on a regular grid. It has no temporal alert semantics, no
 irregular timestamps or phase robustness, and no PromQL `rate` or counter
 resets, and it enforces requirements by corrections rather than an analytic
-budget. It will be a baseline.
+budget. It is a baseline (H6, `baselines/safeguards/run.py`); with the most
+favourable translation we found it preserves every decision on the
+synthetic data and beats the purely analytic budget, but not the
+optimistic budget with repair (H7).
 
 The Lipschitz step itself is standard quantity-of-interest error propagation
 (Liu et al., PVLDB 2022). The contribution lies in the problem statement, the
@@ -181,7 +192,9 @@ crates/
   alertsafe-codec/   budget (Theorem 1, Prop. 1), block codec, range coder,
                      verify-and-repair; tests/decisions.rs: property tests of
                      the invariant; tests/codec.rs: round-trip properties
-  alertsafe-bench/   seeded synthetic datasets and experiments H1-H5
+  alertsafe-bench/   seeded synthetic datasets and experiments H1-H7
+baselines/
+  safeguards/run.py  Compression Safeguards + SZ3 baseline for H6 (Python, uv)
 docs/
   formal-model.md    definitions, lemmas, theorem, propositions, proofs
   related-work.md    novelty check and positioning
@@ -192,7 +205,11 @@ docs/
 
 ```sh
 cargo test --release                              # unit + property tests (10000 random cases)
-cargo run --release -p alertsafe-bench -- all 7   # H1-H5 on 7 synthetic days
+cargo run --release -p alertsafe-bench -- all 7   # H1-H5, H7 on 7 synthetic days
+# H6: Compression Safeguards baseline (needs uv)
+cargo run --release -p alertsafe-bench -- export /tmp/h6 7
+uv run baselines/safeguards/run.py /tmp/h6
+cargo run --release -p alertsafe-bench -- h6 /tmp/h6 7
 ```
 
 ```rust
