@@ -84,8 +84,10 @@ fn write_raw<T: Copy>(path: &Path, xs: &[T], to_le: impl Fn(T) -> [u8; 8]) {
 fn read_f64(path: &Path) -> Vec<f64> {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
     bytes
-        .chunks_exact(8)
-        .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|&b| f64::from_le_bytes(b))
         .collect()
 }
 
