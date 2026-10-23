@@ -378,7 +378,7 @@ fn decode_entropy(bytes: &[u8]) -> Vec<f64> {
 }
 
 /// LEB128.
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+pub(crate) fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
         out.push(v as u8 | 0x80);
         v >>= 7;
@@ -386,7 +386,7 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     out.push(v as u8);
 }
 
-fn get_varint(bytes: &[u8], pos: &mut usize) -> u64 {
+pub(crate) fn get_varint(bytes: &[u8], pos: &mut usize) -> u64 {
     let mut v = 0u64;
     for shift in (0..64).step_by(7) {
         let b = *bytes.get(*pos).expect("truncated header");
@@ -501,7 +501,14 @@ fn plan_lossy(
 /// One closed-loop quantization step; `None` means the sample must escape.
 /// In [`Mode::Counter`] the output must not fall below `floor` (the previous
 /// reconstruction, or the previous chunk's last one; NaN means none).
-fn quantize(x: f64, eps: f64, y_prev: f64, floor: f64, q: f64, mode: Mode) -> Option<(i64, f64)> {
+pub(crate) fn quantize(
+    x: f64,
+    eps: f64,
+    y_prev: f64,
+    floor: f64,
+    q: f64,
+    mode: Mode,
+) -> Option<(i64, f64)> {
     if eps.is_nan() || eps <= 0.0 || !x.is_finite() || !y_prev.is_finite() {
         return None;
     }
@@ -525,11 +532,11 @@ fn quantize(x: f64, eps: f64, y_prev: f64, floor: f64, q: f64, mode: Mode) -> Op
     ok.then_some((k, y))
 }
 
-fn zigzag(v: i64) -> u64 {
+pub(crate) fn zigzag(v: i64) -> u64 {
     ((v << 1) ^ (v >> 63)) as u64
 }
 
-fn unzigzag(z: u64) -> i64 {
+pub(crate) fn unzigzag(z: u64) -> i64 {
     ((z >> 1) as i64) ^ -((z & 1) as i64)
 }
 

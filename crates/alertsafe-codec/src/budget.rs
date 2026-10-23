@@ -173,7 +173,7 @@ pub fn tolerance(rule: &Rule, ts: &[i64], x: &[f64], t: i64) -> Option<(Range<us
 
 /// Tolerance `margin / L - slack` of a Lipschitz aggregate over `n` samples
 /// whose absolute values sum to `abs_sum` (only read for `sum/avg`).
-fn lipschitz_tolerance(agg: Agg, th: f64, n: usize, abs_sum: f64, v: f64) -> f64 {
+pub(crate) fn lipschitz_tolerance(agg: Agg, th: f64, n: usize, abs_sum: f64, v: f64) -> f64 {
     let n = n as f64;
     // Sup-norm Lipschitz constant of f and a bound on the rounding error of
     // evaluating f on both the original and the reconstruction. `abs_sum` may
@@ -187,8 +187,15 @@ fn lipschitz_tolerance(agg: Agg, th: f64, n: usize, abs_sum: f64, v: f64) -> f64
     // Two `next_down`s: one absorbs the rounding of `|v - th|`, one turns a
     // non-strict bound into a strict one.
     let avail = ((v - th).abs() - slack).next_down().next_down();
-    if avail > 0.0 {
-        (avail / lip).next_down()
+    // `sum/avg` of the reconstruction must not overflow (an `f64` window
+    // summing to `inf` flips the condition however large the margin): keep
+    // `sum |y_i| <= abs_sum + n tau <= MAX / 2` (found by Kani).
+    let headroom = match agg {
+        Agg::AvgOverTime | Agg::SumOverTime => ((f64::MAX / 2.0 - abs_sum) / n).next_down(),
+        _ => f64::INFINITY,
+    };
+    if avail > 0.0 && headroom > 0.0 {
+        (avail / lip).next_down().min(headroom)
     } else {
         0.0
     }

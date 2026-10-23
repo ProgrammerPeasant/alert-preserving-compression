@@ -17,6 +17,9 @@ pub mod budget;
 pub mod codec;
 pub mod rc;
 
+#[cfg(kani)]
+mod proofs;
+
 use alertsafe_rules::{Diff, Rule, Series};
 
 pub use budget::{plan, plan_naive, Plan};
