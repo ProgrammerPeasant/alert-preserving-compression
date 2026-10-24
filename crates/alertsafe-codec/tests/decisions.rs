@@ -246,15 +246,20 @@ proptest! {
         extra in prop_oneof![Just(Agg::AvgOverTime), Just(Agg::MaxOverTime)],
         chunk in chunk_len(),
         cap in prop_oneof![Just(f64::INFINITY), (-4i32..2).prop_map(|e| 10f64.powi(e))],
+        slack in prop_oneof![Just(1.0), Just(4.0), Just(1024.0), Just(f64::INFINITY)],
     ) {
         let g = eval_grid(&s, step, off);
         let r2 = Rule::new("extra", extra, r1.range_ms * 2, r1.cmp, r1.threshold * 0.9).hold(r1.for_ms);
         let rules = [r1, r2];
-        let c = compress_with(&s, &rules, &g, Options { chunk, max_error: cap });
+        let c = compress_with(&s, &rules, &g, Options { chunk, max_error: cap, slack });
         let ys = c.decode();
         prop_assert_eq!(ys.len(), s.len());
         prop_assert!(s.vals.iter().zip(&ys).all(|(x, y)| (x - y).abs() <= cap));
         let recon = s.with_values(ys);
         prop_assert_eq!(alert_diff(&s, &recon, &rules, &g), Default::default());
+        if slack == 1.0 {
+            // Theorem 1: the analytic budget alone is sufficient.
+            prop_assert_eq!(c.repairs, 0);
+        }
     }
 }

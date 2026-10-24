@@ -300,12 +300,13 @@ fn h3(days: f64) {
     }
 }
 
-fn datasets(days: f64) -> [Dataset; 4] {
+fn datasets(days: f64) -> [Dataset; 5] {
     [
         gen::cpu(1, days, 0.8, 1.5),
         gen::latency(2, days),
         gen::memory(3, days),
         gen::requests(4, days),
+        gen::requests_gappy(5, days),
     ]
 }
 
@@ -421,6 +422,7 @@ fn h5(days: f64) {
             let opts = Options {
                 chunk: PROM_CHUNK,
                 max_error: cap,
+                ..Default::default()
             };
             let c = compress_with(s, &ds.rules, &g, opts);
             let name = if cap.is_finite() {

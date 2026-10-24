@@ -163,7 +163,13 @@ $f_R(Y)(t) \le \theta$. Lemma 2 and Lemma 1 finish the proof. $\square$
    and then verifies the actual reconstruction against the reference
    evaluator, zeroing budgets on any evaluation that still flips
    (verify-and-repair, `lib.rs`). The loop terminates: an evaluation with an
-   all-zero-budget support reads identical values.
+   all-zero-budget support reads identical values. For `sum/avg` the verifier
+   (sliding sum), the reference evaluator (left-to-right sum) and Prometheus
+   (Kahan sum) round differently; two orders differ by at most
+   $2\gamma_{n-1}\sum_i |y_i|$, so the verifier accepts an evaluation only if
+   the reconstruction is farther than that from $\theta$ (or its support is
+   bitwise exact). The analytic slack is at least twice this bound, so the analytic
+   budget never trips it.
 5. *Multiple rules and series.* Rules compose by the minimum. An aggregate
    across $N$ series (`sum by`) has $L = N$ in the joint sup norm; per-series
    budgets must satisfy $\sum_j \varepsilon^{(j)} \le m$, which couples the
@@ -173,6 +179,13 @@ $f_R(Y)(t) \le \theta$. Lemma 2 and Lemma 1 finish the proof. $\square$
    $\min(\varepsilon_i, \varepsilon_{\max})$ adds a pointwise error bound for
    consumers other than the rules (dashboards, ad-hoc queries) without
    weakening the guarantee (`Options::max_error`).
+7. *Optimistic budget.* The box of Theorem 1 is the worst case of all errors
+   at once; in window aggregates real errors mostly cancel. Encoding with
+   $\kappa\varepsilon_i$ and repairing (halve the budget on the support of
+   every flipped evaluation, never below $\varepsilon_i$, zero once there)
+   keeps the end-to-end guarantee: a support within $\varepsilon$ cannot
+   flip, so the analytic budget is both the sound start ($\kappa = 1$) and
+   the floor that bounds the number of rounds (`Options::slack`, H7).
 
 ## 5. `rate` and counters (Proposition 1)
 

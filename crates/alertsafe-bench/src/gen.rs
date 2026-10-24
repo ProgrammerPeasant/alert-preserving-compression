@@ -193,3 +193,48 @@ pub fn requests(seed: u64, days: f64) -> Dataset {
         ],
     }
 }
+
+/// `requests` with missed scrapes (8% dropped, plus a few outages of 1-6
+/// minutes a day) and traffic that hovers around the spike threshold. Gaps
+/// make Prometheus' extrapolation differ from increase / sampled interval,
+/// and the hovering puts many evaluations close to θ.
+pub fn requests_gappy(seed: u64, days: f64) -> Dataset {
+    let mut rng = Rng::new(seed);
+    let full = timestamps(&mut rng, days);
+    let outages = incidents(&mut rng, &full, 4.0, (1.0, 6.0), (1.0, 1.0));
+    let ts: Vec<i64> = full
+        .iter()
+        .zip(&outages)
+        .filter(|&(_, &o)| o < 0.5 && rng.uniform() >= 0.08)
+        .map(|(&t, _)| t)
+        .collect();
+    let restart_every = (1.3 * DAY_MS as f64 / SCRAPE_MS as f64) as usize;
+    let mut c = 0.0f64;
+    let mut ar = 0.0;
+    let mut prev_t = ts[0] - SCRAPE_MS;
+    let vals = ts
+        .iter()
+        .enumerate()
+        .map(|(i, &t)| {
+            ar = 0.995 * ar + 0.01 * rng.normal();
+            let rps = 690.0 * (1.0 + 0.05 * diurnal(t) + ar);
+            let mean = rps.max(0.0) * (t - prev_t) as f64 / 1000.0;
+            prev_t = t;
+            let inc = (mean + mean.sqrt() * rng.normal()).max(0.0).round();
+            c = if i > 0 && i % restart_every == 0 {
+                inc
+            } else {
+                c + inc
+            };
+            c
+        })
+        .collect();
+    Dataset {
+        name: "requests-gappy",
+        series: Series::new(ts, vals),
+        rules: vec![
+            Rule::new("TrafficSpike", Agg::Rate, 5 * MIN, Cmp::Gt, 700.0).hold(5 * MIN),
+            Rule::new("TrafficDrop", Agg::Rate, 5 * MIN, Cmp::Lt, 600.0).hold(10 * MIN),
+        ],
+    }
+}

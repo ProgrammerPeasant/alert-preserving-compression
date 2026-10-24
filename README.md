@@ -138,10 +138,12 @@ decisions. Full tables, sweeps and caveats: [`docs/results.md`](docs/results.md)
 | latency | `avg_over_time[5m] > 0.5 for 5m`, `x > 1 for 2m keep_firing_for 5m` | 55.24 | 7.22 | 5.20 | **0.22** |
 | memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 49.91 | 12.96 | 6.93 | **0.73** |
 | requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 19.68 | 2.18 | 2.17 | **0.48** |
+| requests-gappy | `rate[5m] > 700 for 5m`, `rate[5m] < 600 for 10m`; 8% missed scrapes, rate hovering at θ | 21.76 | 11.47 | 9.47 | **4.73** |
 
 All columns share the entropy-coded format. The synthetic data support H1
 (4.5 to 24× over a uniform bound tuned on the data, 4.5 to 34× over the
-guaranteed one) and H2 (the rate grows with time spent near thresholds).
+guaranteed one; only 2.0× and 2.4× on `requests-gappy`, where most
+evaluations are near θ) and H2 (the rate grows with time spent near thresholds).
 Entropy coding cut the rule-aware rate 3 to 6× against fixed-width codes
 (1.4 to 2.2 bits per value). In Prometheus-sized chunks of 120 samples
 the rule-aware rate rises to 0.53–1.02 bits per value, 3 to 11× below the
@@ -160,7 +162,12 @@ budget on the gauges (0.16–0.57 vs 0.22–0.73 bits per value): the Theorem 1
 budget is a worst-case box, while the safeguards correct only the
 evaluations that actually change. An optimistic budget (κ = 1024 × the
 analytic one) with a posteriori repair on the flipped supports closes the
-gap: 0.10–0.45 bits per value, 1.3–2.0× below SZ3+SG, and 10–100× faster.
+gap: 0.11–0.45 bits per value, 1.3–1.8× below SZ3+SG, and 10–100× faster
+(`Options::slack`). On a counter with missed scrapes (`requests-gappy`) the
+safeguards' `rate` translation, which cannot express Prometheus'
+extrapolation, changes decisions at 11 of 13 sweep points; its smallest
+safe output is 8.45 bits per value against 4.73 (analytic) and 3.56
+(optimistic).
 None of this counts as evidence until real traces and open rule sets are in.
 
 ## Novelty and positioning

@@ -242,7 +242,7 @@ pub fn h6(dir: &Path, days: f64) {
             .filter(|&i| sg_mm[i] == 0)
             .min_by_key(|&i| pts[i].sg_bytes);
         let sg_failed = sg_mm.iter().filter(|&&m| m > 0).count();
-        let (relaxed_bits, _) = relaxed(ds, RELAX_KAPPA);
+        let (relaxed_bits, _) = relaxed(ds, RELAX_KAPPA, usize::MAX);
         let secs = pts.iter().map(|p| p.sg_secs).sum::<f64>() / pts.len().max(1) as f64;
         let (best_bits, best_eps, gain) = match best {
             Some(i) => {
