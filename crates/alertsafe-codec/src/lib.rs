@@ -45,7 +45,16 @@ pub struct Options {
     /// never below the analytic budget (which cannot flip it), and zeroes it
     /// there as the last resort. `1.0` is the analytic budget alone.
     pub slack: f64,
+    /// Factors `s ≤ 1` on the analytic budget that are also encoded; the
+    /// smallest output wins. Any budget below the analytic one is sound, and
+    /// the coded size is not monotone in the budget (the quantizer steps are
+    /// powers of two, and on discrete data a finer step can be cheaper), so
+    /// the encoder tries a few. `&[1.0]` disables the search.
+    pub scales: &'static [f64],
 }
+
+/// Default [`Options::scales`].
+pub const SCALES: &[f64] = &[1.0, 0.5, 0.25, 0.125];
 
 impl Default for Options {
     fn default() -> Self {
@@ -53,6 +62,7 @@ impl Default for Options {
             chunk: usize::MAX,
             max_error: f64::INFINITY,
             slack: 1.0,
+            scales: SCALES,
         }
     }
 }
@@ -97,6 +107,10 @@ pub fn compress(series: &Series, rules: &[Rule], grid: &[i64]) -> Compressed {
 /// longest window.
 pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Options) -> Compressed {
     assert!(opts.slack >= 1.0, "slack must be at least 1");
+    assert!(
+        opts.scales.iter().all(|&s| s > 0.0 && s <= 1.0),
+        "scales must lie in (0, 1]"
+    );
     let mut plan = budget::plan(series, rules, grid);
     for b in &mut plan.budget {
         // Written so that a NaN budget (exact sample) stays NaN.
@@ -104,18 +118,72 @@ pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Option
             *b = opts.max_error;
         }
     }
-    // Repair floor: a support within it cannot flip (Theorem 1).
-    let floor = plan.budget.clone();
-    for b in plan.budget.iter_mut().filter(|b| **b > 0.0) {
-        if *b * opts.slack < opts.max_error {
-            *b *= opts.slack;
-        } else if *b < opts.max_error {
-            *b = opts.max_error;
+    // `factor * b` on every lossy sample; zero and NaN (exact) stay.
+    let scaled = |factor: f64| -> Vec<f64> {
+        plan.budget
+            .iter()
+            .map(|&b| {
+                if b > 0.0 {
+                    (b * factor).min(opts.max_error)
+                } else {
+                    b
+                }
+            })
+            .collect()
+    };
+    let mut best: Option<Compressed> = None;
+    let mut keep = |c: Compressed| {
+        if best.as_ref().is_none_or(|b| c.bits() < b.bits()) {
+            best = Some(c);
         }
+    };
+    // Below the analytic budget nothing should flip; the loop still verifies.
+    for &s in opts.scales {
+        let start = scaled(s);
+        keep(repair(
+            series,
+            rules,
+            grid,
+            &plan,
+            start.clone(),
+            &start,
+            opts.chunk,
+        ));
     }
+    if opts.slack > 1.0 || opts.scales.is_empty() {
+        // Repair floor: a support within the analytic budget cannot flip.
+        keep(repair(
+            series,
+            rules,
+            grid,
+            &plan,
+            scaled(opts.slack),
+            &plan.budget,
+            opts.chunk,
+        ));
+    }
+    best.unwrap()
+}
+
+/// Encode-verify-repair from the budget `start`: on every flipped evaluation
+/// the budget on its support is halved, never below `floor`, and zeroed
+/// where it already is at the floor.
+fn repair(
+    series: &Series,
+    rules: &[Rule],
+    grid: &[i64],
+    plan: &Plan,
+    start: Vec<f64>,
+    floor: &[f64],
+    chunk: usize,
+) -> Compressed {
+    let mut plan = Plan {
+        budget: start,
+        ..plan.clone()
+    };
     let (mut repairs, mut rounds) = (0, 0);
     loop {
-        let chunks = encode_chunked(&series.vals, &plan.budget, plan.mode, opts.chunk);
+        let chunks = encode_chunked(&series.vals, &plan.budget, plan.mode, chunk);
         let c = Compressed {
             chunks,
             plan,

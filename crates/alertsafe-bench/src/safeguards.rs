@@ -24,7 +24,7 @@ use alertsafe_rules::{Agg, Cmp, Rule};
 
 use crate::gen::Dataset;
 use crate::relax::{relaxed, RELAX_KAPPA};
-use crate::{datasets, eval_grid, tuned, uniform_sweep, value_range, EVAL_MS, EVAL_OFFSET_MS};
+use crate::{eval_grid, tuned, uniform_sweep, value_range, EVAL_MS, EVAL_OFFSET_MS};
 
 fn agg_name(a: Agg) -> &'static str {
     match a {
@@ -81,7 +81,7 @@ fn write_raw<T: Copy>(path: &Path, xs: &[T], to_le: impl Fn(T) -> [u8; 8]) {
     fs::write(path, bytes).unwrap_or_else(|e| panic!("writing {}: {e}", path.display()));
 }
 
-fn read_f64(path: &Path) -> Vec<f64> {
+pub fn read_f64(path: &Path) -> Vec<f64> {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
     bytes
         .as_chunks::<8>()
@@ -91,8 +91,8 @@ fn read_f64(path: &Path) -> Vec<f64> {
         .collect()
 }
 
-pub fn export(dir: &Path, days: f64) {
-    for ds in &datasets(days) {
+pub fn export(dir: &Path, sets: &[Dataset]) {
+    for ds in sets {
         let d = dir.join(ds.name);
         fs::create_dir_all(&d).unwrap();
         let s = &ds.series;
@@ -169,8 +169,8 @@ fn read_sweep(path: &Path) -> Vec<Point> {
         .collect()
 }
 
-pub fn h6(dir: &Path, days: f64) {
-    println!("\n## H6: Compression Safeguards baseline ({days} days)\n");
+pub fn h6(dir: &Path, sets: &[Dataset], title: &str) {
+    println!("\n## H6: Compression Safeguards baseline ({title})\n");
     println!("`SZ3` is SZ3 with an absolute error bound; `SZ3+SG` wraps it in safeguards translated from the rules");
     println!("(see `baselines/safeguards/run.py`); both are swept over the SZ3 bound. `tuned` = largest bound with no");
     println!("changed decision and none below it; `SZ3+SG best` = smallest output with zero state mismatches, if any.");
@@ -179,8 +179,15 @@ pub fn h6(dir: &Path, days: f64) {
     println!("| dataset | lossless (ours) | uniform-tuned (ours) | rule-aware (ours) | rule-aware κ={RELAX_KAPPA} (ours) | SZ3 tuned | SZ3+SG best | SZ3+SG ε / range | SZ3+SG points with mismatches | SZ3+SG encode, s (mean) | ×SZ3+SG |");
     println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     let mut sweeps = Vec::new();
-    for ds in &datasets(days) {
+    for ds in sets {
         let d = dir.join(ds.name);
+        if !d.join("sweep.tsv").exists() {
+            eprintln!(
+                "{}: no sweep.tsv, skipped (run.py --only was not run on it)",
+                ds.name
+            );
+            continue;
+        }
         let s = &ds.series;
         assert_eq!(
             read_f64(&d.join("vals.f64")),

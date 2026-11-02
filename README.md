@@ -5,8 +5,8 @@ algorithm, and Rust implementation.**
 
 Bachelor's thesis project (Software Engineering, HSE University, defence in
 2027). Status: early prototype. The formal core and the codec work end to end
-on synthetic data; real traces, the remote-write proxy, and the Prometheus
-oracle are next.
+on synthetic data and on a first set of real Prometheus series (H8); the
+remote-write proxy and the Prometheus oracle are next.
 
 ## The question
 
@@ -134,41 +134,61 @@ decisions. Full tables, sweeps and caveats: [`docs/results.md`](docs/results.md)
 
 | dataset | rules | lossless (Gorilla XOR) | uniform, guaranteed | uniform, tuned on data | **rule-aware** |
 |---|---|---:|---:|---:|---:|
-| cpu | `avg_over_time[5m] > 0.8 for 10m`, `max_over_time[1m] > 0.97 for 2m` | 53.96 | 11.57 | 2.55 | **0.36** |
+| cpu | `avg_over_time[5m] > 0.8 for 10m`, `max_over_time[1m] > 0.97 for 2m` | 53.96 | 11.57 | 2.55 | **0.30** |
 | latency | `avg_over_time[5m] > 0.5 for 5m`, `x > 1 for 2m keep_firing_for 5m` | 55.24 | 7.22 | 5.20 | **0.22** |
-| memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 49.91 | 12.96 | 6.93 | **0.73** |
+| memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 49.91 | 12.96 | 6.93 | **0.70** |
 | requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 19.68 | 2.18 | 2.17 | **0.48** |
-| requests-gappy | `rate[5m] > 700 for 5m`, `rate[5m] < 600 for 10m`; 8% missed scrapes, rate hovering at θ | 21.76 | 11.47 | 9.47 | **4.73** |
+| requests-gappy | `rate[5m] > 700 for 5m`, `rate[5m] < 600 for 10m`; 8% missed scrapes, rate hovering at θ | 21.76 | 11.47 | 9.47 | **4.68** |
 
 All columns share the entropy-coded format. The synthetic data support H1
-(4.5 to 24× over a uniform bound tuned on the data, 4.5 to 34× over the
+(4.5 to 24× over a uniform bound tuned on the data, 4.5 to 38× over the
 guaranteed one; only 2.0× and 2.4× on `requests-gappy`, where most
 evaluations are near θ) and H2 (the rate grows with time spent near thresholds).
 Entropy coding cut the rule-aware rate 3 to 6× against fixed-width codes
 (1.4 to 2.2 bits per value). In Prometheus-sized chunks of 120 samples
-the rule-aware rate rises to 0.53–1.02 bits per value, 3 to 11× below the
+the rule-aware rate rises to 0.53–1.03 bits per value, 3 to 11× below the
 tuned uniform bound under the same chunking. The reconstruction is only
 faithful near thresholds (RMSE up to 17% of the range on gauges). With a
 pointwise cap it costs within 5% of a uniform bound of the same size. At
 ε = 10⁻³ of the range the uniform bound changes decisions on two datasets,
 while the capped rule-aware codec keeps them for at most 0.15 extra bits per
-value. For H3, decode runs at about 2.3–2.6 GB/s and encode at 100 to 185
-MB/s per core. The $O(n)$ budget runs at about 70 MB/s and the full verified
-`compress` at 26 to 44 MB/s.
+value. For H3, decode runs at about 2.0–2.5 GB/s and encode at 46 to 68
+MB/s per core. The $O(n)$ budget runs at about 50–60 MB/s and the full verified
+`compress` at 5 to 9 MB/s, because it encodes four scalings of the budget and
+keeps the smallest (`Options::scales`; it was 26 to 44 MB/s with one).
 
 **Against Compression Safeguards (H6, H7).** SZ3 wrapped in safeguards
 translated from the rules keeps every decision and beats the analytic
-budget on the gauges (0.16–0.57 vs 0.22–0.73 bits per value): the Theorem 1
+budget on the gauges (0.16–0.57 vs 0.22–0.70 bits per value): the Theorem 1
 budget is a worst-case box, while the safeguards correct only the
 evaluations that actually change. An optimistic budget (κ = 1024 × the
 analytic one) with a posteriori repair on the flipped supports closes the
-gap: 0.11–0.45 bits per value, 1.3–1.8× below SZ3+SG, and 10–100× faster
+gap on synthetic data: 0.11–0.48 bits per value, 1.4–1.8× below SZ3+SG, and 10–100× faster
 (`Options::slack`). On a counter with missed scrapes (`requests-gappy`) the
 safeguards' `rate` translation, which cannot express Prometheus'
 extrapolation, changes decisions at 11 of 13 sweep points; its smallest
-safe output is 8.45 bits per value against 4.73 (analytic) and 3.56
+safe output is 8.45 bits per value against 4.68 (analytic) and 3.48
 (optimistic).
-None of this counts as evidence until real traces and open rule sets are in.
+
+## Results on real Prometheus data (H8, first run)
+
+13 series (node_exporter, Prometheus, Caddy, a demo service), 7 days of raw
+15 s scrapes from the public Prometheus demo servers
+(`scripts/fetch_real.py`), with the upstream node-/prometheus-mixin rules
+reduced to one series. Full tables: [`docs/results-real.md`](docs/results-real.md).
+
+- With the thresholds as deployed, nothing fires and every codec, uniform
+  ones included, costs about 0.1 bits per value.
+- With θ recalibrated to the 95th percentile or the median of each rule's
+  aggregate, the rule-aware codec is 3.5× / 2.0× below a uniform bound tuned
+  on the data (2.17 / 3.01 bits per value; κ = 1024: 1.73 / 2.55).
+- **Compression Safeguards (SZ3+SG) are smaller on real data**: 1.37 / 1.74
+  bits per value on average, and 0.15 / 0.29 on gauges against our 0.89 /
+  1.84. We win only on bursty or slow counters (up to 5.6×). Their `rate`
+  heuristic changed decisions on 2 of 8 real counters. The likely cause is
+  structural: our quantizer step is fixed per 128-sample block, so one
+  sample next to θ sets the precision for the whole block, while SG
+  corrects single samples.
 
 ## Novelty and positioning
 
@@ -183,7 +203,10 @@ resets, and it enforces requirements by corrections rather than an analytic
 budget. It is a baseline (H6, `baselines/safeguards/run.py`); with the most
 favourable translation we found it preserves every decision on the
 synthetic data and beats the purely analytic budget, but not the
-optimistic budget with repair (H7).
+optimistic budget with repair (H7). On real series it beats both (H8).
+What remains specific to this work is the exact `rate` analysis (gappy
+counters), phase robustness, speed, and the analytic budget as a sound
+starting point; the coder itself needs per-sample precision to compete.
 
 The Lipschitz step itself is standard quantity-of-interest error propagation
 (Liu et al., PVLDB 2022). The contribution lies in the problem statement, the
@@ -199,13 +222,18 @@ crates/
   alertsafe-codec/   budget (Theorem 1, Prop. 1), block codec, range coder,
                      verify-and-repair; tests/decisions.rs: property tests of
                      the invariant; tests/codec.rs: round-trip properties
-  alertsafe-bench/   seeded synthetic datasets and experiments H1-H7
+  alertsafe-bench/   seeded synthetic datasets, real-series loader, experiments H1-H8
+scripts/
+  fetch_real.py      raw samples + rules from the public Prometheus demo servers
+datasets/
+  prom-demo-2026-11-02.tar.xz  the 13 real series of H8 (7 days, fetched 2026-11-02)
 baselines/
   safeguards/run.py  Compression Safeguards + SZ3 baseline for H6 (Python, uv)
 docs/
   formal-model.md    definitions, lemmas, theorem, propositions, proofs
   related-work.md    novelty check and positioning
-  results.md         benchmark output
+  results.md         benchmark output (synthetic)
+  results-real.md    benchmark output (real Prometheus series, H8 and H6)
 ```
 
 ## Usage
@@ -213,6 +241,9 @@ docs/
 ```sh
 cargo test --release                              # unit + property tests (10000 random cases)
 cargo run --release -p alertsafe-bench -- all 7   # H1-H5, H7 on 7 synthetic days
+tar -C data -xJf datasets/prom-demo-2026-11-02.tar.xz   # real series of H8
+# or fetch a fresh week: scripts/fetch_real.py data/real 7 (stdlib Python)
+cargo run --release -p alertsafe-bench -- h8 data/real   # H1/H4/H7 on them
 # H6: Compression Safeguards baseline (needs uv)
 cargo run --release -p alertsafe-bench -- export /tmp/h6 7
 uv run baselines/safeguards/run.py /tmp/h6

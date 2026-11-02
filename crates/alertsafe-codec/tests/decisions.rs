@@ -251,7 +251,7 @@ proptest! {
         let g = eval_grid(&s, step, off);
         let r2 = Rule::new("extra", extra, r1.range_ms * 2, r1.cmp, r1.threshold * 0.9).hold(r1.for_ms);
         let rules = [r1, r2];
-        let c = compress_with(&s, &rules, &g, Options { chunk, max_error: cap, slack });
+        let c = compress_with(&s, &rules, &g, Options { chunk, max_error: cap, slack, ..Default::default() });
         let ys = c.decode();
         prop_assert_eq!(ys.len(), s.len());
         prop_assert!(s.vals.iter().zip(&ys).all(|(x, y)| (x - y).abs() <= cap));

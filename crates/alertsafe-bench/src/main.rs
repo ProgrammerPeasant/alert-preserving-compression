@@ -4,10 +4,14 @@
 //! Safeguards baseline, see [`safeguards`]) and H7 (optimistic budget with a
 //! posteriori repair, see [`relax`]).
 //!
+//! H8 runs H1/H4/H7 on real Prometheus series (see [`real`]).
+//!
 //! Usage: `alertsafe-bench [h1|h2|h3|h4|h5|h7|all] [days]`,
-//! `alertsafe-bench [export|h6] DIR [days]`
+//! `alertsafe-bench [export|h6] DIR [days]`, `alertsafe-bench h8 DATA`,
+//! `alertsafe-bench [export|h6] DIR --real DATA`
 
 mod gen;
+mod real;
 mod relax;
 mod safeguards;
 
@@ -52,12 +56,19 @@ struct Sweep {
     max_shift_s: f64,
 }
 
-/// Uniform error bound `eps` swept over powers of four of the value range.
+/// Uniform error bound `eps` swept over powers of four of the value range,
+/// starting from `eps = 0` (lossless) so that [`tuned`] has a safe fallback
+/// when even the smallest nonzero bound changes a decision (e.g. a value
+/// sitting exactly on θ).
 fn uniform_sweep(s: &Series, rules: &[Rule], g: &[i64], mode: Mode) -> Vec<Sweep> {
     let range = value_range(s);
-    (0..=18)
+    (-1..=18)
         .map(|k| {
-            let eps = range * 4f64.powi(k - 18);
+            let eps = if k < 0 {
+                0.0
+            } else {
+                range * 4f64.powi(k - 18)
+            };
             let (enc, recon) = roundtrip(s, &vec![eps; s.len()], mode);
             let d = alert_diff(s, &recon, rules, g);
             Sweep {
@@ -79,7 +90,8 @@ fn tuned(sweep: &[Sweep]) -> &Sweep {
         .iter()
         .position(|w| w.mismatches > 0)
         .unwrap_or(sweep.len());
-    &sweep[k.saturating_sub(1)]
+    assert!(k > 0, "lossless reconstruction changed a decision");
+    &sweep[k - 1]
 }
 
 struct Summary {
@@ -438,17 +450,35 @@ fn h5(days: f64) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let what = args.get(1).map(String::as_str).unwrap_or("all");
-    if let "export" | "h6" = what {
-        let Some(dir) = args.get(2) else {
-            eprintln!("usage: alertsafe-bench {what} DIR [days]");
+    if what == "h8" {
+        let Some(data) = args.get(2) else {
+            eprintln!("usage: alertsafe-bench h8 DATA (written by scripts/fetch_real.py)");
             std::process::exit(2);
         };
-        let days: f64 = args.get(3).and_then(|d| d.parse().ok()).unwrap_or(1.0);
+        real::h8(std::path::Path::new(data));
+        return;
+    }
+    if let "export" | "h6" = what {
+        let Some(dir) = args.get(2) else {
+            eprintln!("usage: alertsafe-bench {what} DIR [days | --real DATA]");
+            std::process::exit(2);
+        };
         let dir = std::path::Path::new(dir);
-        if what == "export" {
-            safeguards::export(dir, days);
+        let (sets, title) = if args.get(3).map(String::as_str) == Some("--real") {
+            let Some(data) = args.get(4) else {
+                eprintln!("usage: alertsafe-bench {what} DIR --real DATA");
+                std::process::exit(2);
+            };
+            let real = real::load(std::path::Path::new(data));
+            (real::datasets(&real), "real Prometheus series".to_string())
         } else {
-            safeguards::h6(dir, days);
+            let days: f64 = args.get(3).and_then(|d| d.parse().ok()).unwrap_or(1.0);
+            (datasets(days).into(), format!("{days} days"))
+        };
+        if what == "export" {
+            safeguards::export(dir, &sets);
+        } else {
+            safeguards::h6(dir, &sets, &title);
         }
         return;
     }

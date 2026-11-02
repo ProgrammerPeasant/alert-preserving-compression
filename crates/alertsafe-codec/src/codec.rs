@@ -19,6 +19,8 @@ use crate::rc::{CostSink, Models, RcDecoder, RcEncoder, Sink, Source};
 pub const BLOCK: usize = 128;
 const E_MIN: i32 = -126;
 const E_MAX: i32 = 126;
+/// Finer grids tried below every budget's own exponent ([`candidate_exponents`]).
+const FINER_STEPS: i32 = 2;
 /// Largest step count coded in a lossy block; beyond it the sample escapes.
 const K_MAX: f64 = (1u64 << 50) as f64;
 
@@ -416,6 +418,14 @@ fn candidate_exponents(eps: &[f64], mode: Mode) -> Vec<i32> {
             }
         })
         .collect();
+    // A finer step is admissible wherever a coarser one is, and the cost is
+    // not monotone in the step: on a counter whose increments are a fraction
+    // of the budget, halving `q` can halve the rate. The exact block cost
+    // decides, so also offer the next FINER_STEPS finer grids.
+    let coarse = es.clone();
+    for e in coarse {
+        es.extend((1..=FINER_STEPS).map(|d| (e - d).max(E_MIN)));
+    }
     es.sort_unstable();
     es.dedup();
     es
