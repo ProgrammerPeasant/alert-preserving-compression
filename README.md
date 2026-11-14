@@ -106,9 +106,16 @@ bits per sample. H2 is a monotonicity statement in the margin distribution.
    per sample. In counter mode, keep samples around resets exact. Supports
    are monotone in $t$, so window aggregates slide (two-stacks queue) and the
    per-sample minimum is a sliding minimum over instants: $O(n)$ per rule.
+   Every aggregate except `rate` is monotone, so each evaluation can only
+   be pushed across $\theta$ in one direction (Corollary 1): the plan keeps
+   separate down/up tolerances per sample, and a sample read only by
+   evaluations on one side is free in the other direction. For `rate`
+   only window ends carry a budget (Proposition 1(e)).
 2. **Codec** (`alertsafe-codec::codec`). Blocks of 128 samples. For each
    block, pick the cheapest of lossless Gorilla XOR and closed-loop DPCM on a
-   grid $q = 2^e$ (rounding for gauges, floor for counters). DPCM codes
+   grid $q = 2^e$ (rounding for gauges, floor for counters; per sample
+   either the nearest admissible step or the one closest to the
+   prediction, whichever codes smaller). DPCM codes
    either the step counts or their deltas, with an escape to raw float64.
    Every decision and residual is coded with an adaptive binary range coder
    (`alertsafe-codec::rc`; zero flag, sign and unary bit length under a
@@ -170,25 +177,32 @@ extrapolation, changes decisions at 11 of 13 sweep points; its smallest
 safe output is 8.45 bits per value against 4.68 (analytic) and 3.48
 (optimistic).
 
-## Results on real Prometheus data (H8, first run)
+## Results on real Prometheus data (H8)
 
-13 series (node_exporter, Prometheus, Caddy, a demo service), 7 days of raw
-15 s scrapes from the public Prometheus demo servers
-(`scripts/fetch_real.py`), with the upstream node-/prometheus-mixin rules
-reduced to one series. Full tables: [`docs/results-real.md`](docs/results-real.md).
+13 series (node_exporter, Prometheus, Caddy, a demo service) of raw 15 s
+scrapes from the public Prometheus demo servers (`scripts/fetch_real.py`),
+7-day and 30-day snapshots in `datasets/`, with the upstream
+node-/prometheus-mixin rules reduced to one series. Full tables:
+[`docs/results-real.md`](docs/results-real.md).
 
+- Zero changed decisions in every rule-aware cell (1 864 firings over the
+  7-day variants, 7 191 over the 30-day ones).
 - With the thresholds as deployed, nothing fires and every codec, uniform
-  ones included, costs about 0.1 bits per value.
+  ones included, costs under 0.1 bits per value.
 - With θ recalibrated to the 95th percentile or the median of each rule's
-  aggregate, the rule-aware codec is 3.5× / 2.0× below a uniform bound tuned
-  on the data (2.17 / 3.01 bits per value; κ = 1024: 1.73 / 2.55).
-- **Compression Safeguards (SZ3+SG) are smaller on real data**: 1.37 / 1.74
-  bits per value on average, and 0.15 / 0.29 on gauges against our 0.89 /
-  1.84. We win only on bursty or slow counters (up to 5.6×). Their `rate`
-  heuristic changed decisions on 2 of 8 real counters. The likely cause is
-  structural: our quantizer step is fixed per 128-sample block, so one
-  sample next to θ sets the precision for the whole block, while SG
-  corrects single samples.
+  aggregate, the rule-aware codec is 6.5× / 4.0× below a uniform bound tuned
+  on the data on 7 days (1.13 / 1.49 bits per value) and 5.9× / 5.1× on 30
+  days (0.97 / 1.16).
+- Against Compression Safeguards (SZ3+SG, best mismatch-free point of its
+  sweep), the optimistic budget (κ = 1024) is smaller on 19 of 26 datasets
+  in both snapshots (geometric mean of the ratio 0.61 on 7 days, 0.43 on
+  30 days). SG remains smaller on dense counters under `rate`
+  (`prometheus_samples_appended`, `node_cpu0_idle`, `demo_api_foo_200`).
+  SG's `rate` translation changed decisions at some sweep points on 4 of
+  8 counters across the two snapshots.
+- The first run (box budget of Theorem 1) lost to SG on 16 of 26; the
+  one-sided budget (Corollary 1) and lazy step choice closed the gap
+  without changing the format.
 
 ## Novelty and positioning
 
