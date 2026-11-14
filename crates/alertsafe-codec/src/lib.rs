@@ -27,7 +27,10 @@ mod proofs;
 use alertsafe_rules::{Agg, Diff, Rule, Series, SlidingWindow};
 
 pub use budget::{plan, plan_naive, Plan};
-pub use codec::{decode, encode, encode_chunk, encode_with, Coding, Encoded, Mode};
+pub use codec::{
+    decode, encode, encode_bounds, encode_chunk, encode_steps, encode_with, Coding, Encoded, Mode,
+    Steps,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -86,7 +89,7 @@ impl Compressed {
     }
 
     pub fn bits_per_value(&self) -> f64 {
-        self.bits() as f64 / self.plan.budget.len().max(1) as f64
+        self.bits() as f64 / self.plan.down.len().max(1) as f64
     }
 
     pub fn decode(&self) -> Vec<f64> {
@@ -112,16 +115,15 @@ pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Option
         "scales must lie in (0, 1]"
     );
     let mut plan = budget::plan(series, rules, grid);
-    for b in &mut plan.budget {
+    for b in plan.down.iter_mut().chain(plan.up.iter_mut()) {
         // Written so that a NaN budget (exact sample) stays NaN.
         if *b > opts.max_error {
             *b = opts.max_error;
         }
     }
     // `factor * b` on every lossy sample; zero and NaN (exact) stay.
-    let scaled = |factor: f64| -> Vec<f64> {
-        plan.budget
-            .iter()
+    let scale = |v: &[f64], factor: f64| -> Vec<f64> {
+        v.iter()
             .map(|&b| {
                 if b > 0.0 {
                     (b * factor).min(opts.max_error)
@@ -130,6 +132,11 @@ pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Option
                 }
             })
             .collect()
+    };
+    let scaled = |factor: f64| Plan {
+        down: scale(&plan.down, factor),
+        up: scale(&plan.up, factor),
+        mode: plan.mode,
     };
     let mut best: Option<Compressed> = None;
     let mut keep = |c: Compressed| {
@@ -144,7 +151,6 @@ pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Option
             series,
             rules,
             grid,
-            &plan,
             start.clone(),
             &start,
             opts.chunk,
@@ -156,9 +162,8 @@ pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Option
             series,
             rules,
             grid,
-            &plan,
             scaled(opts.slack),
-            &plan.budget,
+            &plan,
             opts.chunk,
         ));
     }
@@ -168,22 +173,18 @@ pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Option
 /// Encode-verify-repair from the budget `start`: on every flipped evaluation
 /// the budget on its support is halved, never below `floor`, and zeroed
 /// where it already is at the floor.
+/// Both directions of the budget are treated alike.
 fn repair(
     series: &Series,
     rules: &[Rule],
     grid: &[i64],
-    plan: &Plan,
-    start: Vec<f64>,
-    floor: &[f64],
+    mut plan: Plan,
+    floor: &Plan,
     chunk: usize,
 ) -> Compressed {
-    let mut plan = Plan {
-        budget: start,
-        ..plan.clone()
-    };
     let (mut repairs, mut rounds) = (0, 0);
     loop {
-        let chunks = encode_chunked(&series.vals, &plan.budget, plan.mode, chunk);
+        let chunks = encode_chunked(&series.vals, &plan.down, &plan.up, plan.mode, chunk);
         let c = Compressed {
             chunks,
             plan,
@@ -199,35 +200,48 @@ fn repair(
         repairs += flips.len();
         rounds += 1;
         // Decide on the budgets this round was encoded with: supports overlap.
-        let prev = plan.budget.clone();
+        let prev = plan.clone();
         for (rule, t) in flips {
             let sup = rule.support(&series.ts, t);
-            let relaxed = sup.clone().any(|i| prev[i] > floor[i]);
-            for i in sup {
-                plan.budget[i] = if relaxed {
-                    // An infinite budget (infinite slack) goes to the floor.
-                    let half = if prev[i].is_finite() {
-                        prev[i] * 0.5
+            let relaxed = sup
+                .clone()
+                .any(|i| prev.down[i] > floor.down[i] || prev.up[i] > floor.up[i]);
+            for (cur, prev, floor) in [
+                (&mut plan.down, &prev.down, &floor.down),
+                (&mut plan.up, &prev.up, &floor.up),
+            ] {
+                for i in sup.clone() {
+                    cur[i] = if relaxed {
+                        // An infinite budget (infinite slack) goes to the floor.
+                        let half = if prev[i].is_finite() {
+                            prev[i] * 0.5
+                        } else {
+                            floor[i]
+                        };
+                        cur[i].min(half.max(floor[i]))
                     } else {
-                        floor[i]
+                        0.0
                     };
-                    plan.budget[i].min(half.max(floor[i]))
-                } else {
-                    0.0
-                };
+                }
             }
         }
     }
 }
 
 /// Codes `vals` as consecutive independent streams of at most `chunk`
-/// samples, each continuing the previous one (see [`encode_chunk`]).
-pub fn encode_chunked(vals: &[f64], budget: &[f64], mode: Mode, chunk: usize) -> Vec<Encoded> {
+/// samples, each continuing the previous one (see [`encode_bounds`]).
+pub fn encode_chunked(
+    vals: &[f64],
+    down: &[f64],
+    up: &[f64],
+    mode: Mode,
+    chunk: usize,
+) -> Vec<Encoded> {
     let mut floor = f64::NEG_INFINITY;
     vals.chunks(chunk)
-        .zip(budget.chunks(chunk))
-        .map(|(xs, eps)| {
-            let e = encode_chunk(xs, eps, mode, Coding::Entropy, floor);
+        .zip(down.chunks(chunk).zip(up.chunks(chunk)))
+        .map(|(xs, (down, up))| {
+            let e = encode_bounds(xs, down, up, mode, Coding::Entropy, floor);
             floor = e.last;
             e
         })

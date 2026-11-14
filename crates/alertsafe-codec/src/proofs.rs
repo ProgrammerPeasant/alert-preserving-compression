@@ -9,6 +9,8 @@
 //!   This covers the rounding slack in `lipschitz_tolerance`. For
 //!   `min/max_over_time` the monolithic statement is out of reach of the
 //!   SAT solver, so it is proven in three parts (see [`scalar_tolerance`]).
+//! - Corollary 1 (one-sided budget) for `last/min/max`: the evaluator is
+//!   monotone in every sample (`eval_monotone_*`).
 //! - The quantizer's output is what the decoder reconstructs, bit for bit,
 //!   and respects the budget (and, for counters, the floor quantizer's
 //!   invariants of Proposition 1).
@@ -218,6 +220,36 @@ fn extremum_pair_min() {
     extremum_pair(false);
 }
 
+/// Corollary 1 for `last` and `min/max_over_time`: the evaluator is
+/// monotone bitwise, so a reconstruction that is componentwise above
+/// (below) one satisfying Theorem 1 keeps an upper (lower) condition.
+fn eval_monotone<const N: usize>(agg: Agg) {
+    let (y, z): ([f64; N], [f64; N]) = (kani::any(), kani::any());
+    for i in 0..N {
+        kani::assume(z[i].is_finite() && y[i].is_finite() && y[i] >= z[i]);
+    }
+    let (rule, ts, t) = window_rule::<N>(agg, Cmp::Gt, 0.0);
+    assert!(rule.eval(&ts, &y, t).unwrap() >= rule.eval(&ts, &z, t).unwrap());
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn eval_monotone_last() {
+    eval_monotone::<3>(Agg::Last);
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn eval_monotone_max_over_time() {
+    eval_monotone::<3>(Agg::MaxOverTime);
+}
+
+#[kani::proof]
+#[kani::unwind(4)]
+fn eval_monotone_min_over_time() {
+    eval_monotone::<3>(Agg::MinOverTime);
+}
+
 /// The fact (B2) rests on: rounded subtraction is monotone in both
 /// arguments (IEEE 754 rounding is monotone).
 #[kani::proof]
@@ -266,7 +298,8 @@ fn tolerance_of_extremum_min_over_time() {
 
 #[kani::proof]
 fn quantize_matches_decoder_and_budget() {
-    let (x, eps, y_prev, floor): (f64, f64, f64, f64) = kani::any();
+    let (x, down, up, y_prev, floor): (f64, f64, f64, f64, f64) = kani::any();
+    let pref: Option<i64> = if kani::any() { Some(kani::any()) } else { None };
     let e: i32 = kani::any();
     kani::assume((-60..=60).contains(&e));
     let q = 2f64.powi(e);
@@ -275,16 +308,16 @@ fn quantize_matches_decoder_and_budget() {
     } else {
         Mode::Counter
     };
-    if let Some((k, y)) = quantize(x, eps, y_prev, floor, q, mode) {
+    if let Some((k, y)) = quantize(x, down, up, y_prev, floor, q, mode, pref) {
         // The decoder's reconstruction (`decode_*`), compared bitwise: a
         // differing sign of zero desynchronizes the XOR reference.
         assert_eq!((y_prev + k as f64 * q).to_bits(), y.to_bits());
         match mode {
             Mode::Gauge => {
-                assert!((y - x).abs() <= eps);
+                assert!(if y >= x { y - x <= up } else { x - y <= down });
             }
             Mode::Counter => {
-                assert!(k >= 0 && y <= x && x - y <= eps && y >= y_prev);
+                assert!(k >= 0 && y <= x && x - y <= down && y >= y_prev);
                 assert!(floor.is_nan() || y >= floor);
             }
         }

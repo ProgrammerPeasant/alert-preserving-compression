@@ -18,8 +18,8 @@ mod safeguards;
 use std::time::Instant;
 
 use alertsafe_codec::{
-    alert_diff, budget, compress, compress_with, decode, encode, encode_chunked, encode_with,
-    Coding, Encoded, Mode, Options,
+    alert_diff, budget, compress, compress_with, decode, encode, encode_bounds, encode_chunked,
+    encode_steps, Coding, Encoded, Mode, Options, Steps,
 };
 use alertsafe_rules::{grid, Rule, Series};
 use gen::Dataset;
@@ -69,15 +69,38 @@ fn uniform_sweep(s: &Series, rules: &[Rule], g: &[i64], mode: Mode) -> Vec<Sweep
             } else {
                 range * 4f64.powi(k - 18)
             };
-            let (enc, recon) = roundtrip(s, &vec![eps; s.len()], mode);
-            let d = alert_diff(s, &recon, rules, g);
-            Sweep {
-                eps,
-                bits_per_value: enc.bits_per_value(),
-                mismatches: d.state_mismatches,
-                changed: d.changed_firings(),
-                max_shift_s: d.max_shift_ms as f64 / 1000.0,
-            }
+            // Both step choices of the codec; the lazy one biases errors,
+            // which a symmetric bound does not account for. Keep the
+            // smaller output among those that keep every decision.
+            let eb = vec![eps; s.len()];
+            [Steps::Nearest, Steps::Adaptive]
+                .map(|steps| {
+                    let enc = encode_steps(
+                        &s.vals,
+                        &eb,
+                        &eb,
+                        mode,
+                        Coding::Entropy,
+                        f64::NEG_INFINITY,
+                        steps,
+                    );
+                    let recon = s.with_values(decode(&enc.bytes));
+                    let d = alert_diff(s, &recon, rules, g);
+                    Sweep {
+                        eps,
+                        bits_per_value: enc.bits_per_value(),
+                        mismatches: d.state_mismatches,
+                        changed: d.changed_firings(),
+                        max_shift_s: d.max_shift_ms as f64 / 1000.0,
+                    }
+                })
+                .into_iter()
+                .min_by(|a, b| {
+                    (a.mismatches > 0, a.bits_per_value)
+                        .partial_cmp(&(b.mismatches > 0, b.bits_per_value))
+                        .unwrap()
+                })
+                .unwrap()
         })
         .collect()
 }
@@ -123,7 +146,7 @@ fn summarize(ds: &Dataset, print_sweep: bool) -> Summary {
     let lossless = roundtrip(s, &vec![0.0; s.len()], mode).0;
     // Largest uniform bound satisfying the same sufficient condition. Samples
     // the plan keeps exact (counter resets, exact ties) stay exact here too.
-    let raw_budget = budget::plan(s, &ds.rules, &g).budget;
+    let raw_budget = budget::plan(s, &ds.rules, &g).budget();
     let eps_safe = raw_budget
         .iter()
         .copied()
@@ -143,7 +166,7 @@ fn summarize(ds: &Dataset, print_sweep: bool) -> Summary {
     // quantizers is the mean log-ratio of their steps.
     let finite: Vec<f64> = c
         .plan
-        .budget
+        .budget()
         .iter()
         .copied()
         .filter(|&b| b > 0.0 && b.is_finite())
@@ -185,11 +208,18 @@ fn summarize(ds: &Dataset, print_sweep: bool) -> Summary {
         uniform_safe: safe_enc.bits_per_value(),
         uniform_tuned: tuned(&sweep).bits_per_value,
         rule_aware: c.bits_per_value(),
-        rule_aware_fixed: encode_with(&s.vals, &c.plan.budget, mode, Coding::Fixed)
-            .bits_per_value(),
+        rule_aware_fixed: encode_bounds(
+            &s.vals,
+            &c.plan.down,
+            &c.plan.up,
+            mode,
+            Coding::Fixed,
+            f64::NEG_INFINITY,
+        )
+        .bits_per_value(),
         predicted_gain_bits,
         repairs: c.repairs,
-        exact_share: c.plan.budget.iter().filter(|&&b| b == 0.0).count() as f64 / s.len() as f64,
+        exact_share: c.plan.budget().iter().filter(|&&b| b == 0.0).count() as f64 / s.len() as f64,
         episodes,
     }
 }
@@ -246,7 +276,7 @@ fn h2(days: f64) {
             ds.rules.truncate(1);
             let r = summarize(&ds, false);
             let near = budget::plan(&ds.series, &ds.rules, &eval_grid(&ds.series))
-                .budget
+                .budget()
                 .iter()
                 .filter(|&&b| b < 0.01)
                 .count() as f64
@@ -287,10 +317,26 @@ fn h3(days: f64) {
         let mb = s.len() as f64 * 8.0 / 1e6;
         let (t_naive, _) = best_of(5, || budget::plan_naive(s, &ds.rules, &g));
         let (t_plan, plan) = best_of(5, || budget::plan(s, &ds.rules, &g));
-        let (t_enc, enc) = best_of(5, || encode(&s.vals, &plan.budget, plan.mode));
+        let (t_enc, enc) = best_of(5, || {
+            encode_bounds(
+                &s.vals,
+                &plan.down,
+                &plan.up,
+                plan.mode,
+                Coding::Entropy,
+                f64::NEG_INFINITY,
+            )
+        });
         let (t_dec, _) = best_of(5, || decode(&enc.bytes));
         let (t_enc_fx, enc_fx) = best_of(5, || {
-            encode_with(&s.vals, &plan.budget, plan.mode, Coding::Fixed)
+            encode_bounds(
+                &s.vals,
+                &plan.down,
+                &plan.up,
+                plan.mode,
+                Coding::Fixed,
+                f64::NEG_INFINITY,
+            )
         });
         let (t_dec_fx, _) = best_of(5, || decode(&enc_fx.bytes));
         let zeros = vec![0.0; s.len()];
@@ -327,7 +373,7 @@ const PROM_CHUNK: usize = 120;
 
 /// Bits per value of `vals` coded as independent streams of `chunk` samples.
 fn chunked_bits_per_value(vals: &[f64], budget: &[f64], mode: Mode, chunk: usize) -> f64 {
-    let bits: usize = encode_chunked(vals, budget, mode, chunk)
+    let bits: usize = encode_chunked(vals, budget, budget, mode, chunk)
         .iter()
         .map(|e| e.bits)
         .sum();
@@ -422,7 +468,13 @@ fn h5(days: f64) {
             d.state_mismatches
         };
         for eps in [eps_tuned, 1e-3 * range] {
-            let enc = encode_chunked(&s.vals, &vec![eps; s.len()], mode, PROM_CHUNK);
+            let enc = encode_chunked(
+                &s.vals,
+                &vec![eps; s.len()],
+                &vec![eps; s.len()],
+                mode,
+                PROM_CHUNK,
+            );
             let bits: usize = enc.iter().map(|e| e.bits).sum();
             row(
                 format!("uniform ε = {:.1e}", eps / range),

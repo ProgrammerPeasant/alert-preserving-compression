@@ -150,17 +150,24 @@ fn check_analytic(
     let rules = [rule.clone()];
     let plan = budget::plan(series, &rules, &g);
     let recon = series.with_values(
-        encode_chunked(&series.vals, &plan.budget, plan.mode, chunk)
+        encode_chunked(&series.vals, &plan.down, &plan.up, plan.mode, chunk)
             .iter()
             .flat_map(|e| decode(&e.bytes))
             .collect(),
     );
     for i in 0..series.len() {
-        let err = (recon.vals[i] - series.vals[i]).abs();
+        let (x, y) = (series.vals[i], recon.vals[i]);
+        let within = if y >= x {
+            y - x <= plan.up[i]
+        } else {
+            x - y <= plan.down[i]
+        };
         prop_assert!(
-            err <= plan.budget[i],
-            "sample {i}: err {err} > budget {}",
-            plan.budget[i]
+            within,
+            "sample {i}: y - x = {} outside [-{}, {}]",
+            y - x,
+            plan.down[i],
+            plan.up[i]
         );
     }
     // Theorem 1: no repair needed, conditions agree at every protected instant.
@@ -195,8 +202,12 @@ fn check_fast_budget(
 ) -> Result<(), TestCaseError> {
     let g = eval_grid(series, step, offset);
     let rules = [rule.clone()];
-    let fast = budget::plan(series, &rules, &g).budget;
-    let naive = plan_naive(series, &rules, &g).budget;
+    let (fast, naive) = (
+        budget::plan(series, &rules, &g),
+        plan_naive(series, &rules, &g),
+    );
+    let fast: Vec<f64> = fast.down.iter().chain(&fast.up).copied().collect();
+    let naive: Vec<f64> = naive.down.iter().chain(&naive.up).copied().collect();
     let exact = !matches!(rule.agg, Agg::SumOverTime | Agg::AvgOverTime);
     for (i, (a, b)) in fast.iter().zip(&naive).enumerate() {
         let ok = if exact {

@@ -187,6 +187,46 @@ $f_R(Y)(t) \le \theta$. Lemma 2 and Lemma 1 finish the proof. $\square$
    flip, so the analytic budget is both the sound start ($\kappa = 1$) and
    the floor that bounds the number of rounds (`Options::slack`, H7).
 
+**Corollary 1 (one-sided budget).** Every $F$ in the table is
+non-decreasing in each argument: $y \ge z$ componentwise implies
+$F(y) \ge F(z)$. Call $(R, t)$ *upper* if $f_R(X)(t)$ lies on the side of
+$\theta$ that only a decrease can leave ($c$ true with $\bowtie \in \{>, \ge\}$,
+or $c$ false with $\bowtie \in \{<, \le\}$), and *lower* otherwise. Define
+
+$$
+\delta^-_i = \min\{\tau_R(t) : i \in S_R(t),\ (R,t) \text{ upper}\},\qquad
+\delta^+_i = \min\{\tau_R(t) : i \in S_R(t),\ (R,t) \text{ lower}\}.
+$$
+
+If $-\delta^-_i \le y_i - x_i \le \delta^+_i$ for all $i$ (strict where tight),
+then $c_R(Y)(t) = c_R(X)(t)$ for all protected $(R, t)$.
+
+*Proof.* Fix an upper $(R, t)$ and let $z_i = \min(y_i, x_i)$ on its support.
+Then $|z_i - x_i| \le \delta^-_i \le \tau_R(t)$, so $z$ satisfies Theorem 1
+at $(R, t)$, and $F(y) \ge F(z)$ by monotonicity keeps $f_R(Y)(t)$ on the
+upper side. Lower evaluations are symmetric with $\max$. $\square$
+
+Since $\varepsilon_i = \min(\delta^-_i, \delta^+_i)$, the box of Theorem 1 is
+contained in the one-sided set. The difference is large: a sample read only
+by upper evaluations may move up arbitrarily, and for `last` the admissible
+set is the whole half-line on its side of $\theta$. Near a threshold the
+series lies mostly on one side, so most samples are constrained in one
+direction only, and a predictive coder can keep its prediction whenever it
+is still on the right side (the *lazy* step choice in `codec.rs`).
+
+*Floating point.* `last`, `min` and `max` are exact, so monotonicity holds
+bitwise. A rounded sum in any fixed order is monotone (rounding is), but
+Prometheus sums with Kahan compensation, which is not; there the proof goes
+through the error bound instead: with $z$ as above,
+$\mathrm{fl}\sum y \ge \sum y - \gamma\sum|y|$ and
+$\sum|y| \le \sum|z| + \sum(y - z)$, so $\mathrm{fl}\sum y \ge \sum z - \gamma\sum|z|$
+up to $O(u^2)$, which the slack of Remark 4 covers. Two consequences in the
+code (`budget.rs`): the free direction of a `sum/avg` sample is capped so
+that $\sum|y|$ stays below `MAX/2` (no overflow), and an evaluation whose
+margin is inside the rounding slack ($\tau = 0$) is constrained in both
+directions, since another summation order may put it on the other side of
+$\theta$ (found by the property tests).
+
 ## 5. `rate` and counters (Proposition 1)
 
 Prometheus' `extrapolatedRate` over a window with $n \ge 2$ samples, first
@@ -228,6 +268,14 @@ $$
 off: if $y_f < 0 \le x_f$ the extrapolation jumps by $\Delta d_s / (S W)$.
 This happens only for counters within $\varepsilon$ of zero.
 
+(e) *Only the window ends matter.* With the reset set and the values
+before resets preserved (b), $\Delta$ and $x_f$ read only $x_f$, $x_l$ and
+the comparisons $y_i < y_{i-1}$; an inner sample may take any value in
+$[y_{i-1}, x_i]$, which the floor quantizer guarantees. The budget of a
+`rate` evaluation therefore applies to the first and last sample of its
+window only. With a 30 s evaluation grid on 15 s scrapes about half of the
+samples are no window's end and are free (up to monotonicity).
+
 *Proof sketch.* (a) Example: $x = (10, 20, 20)$ has no reset; $y = (10, 20, 20 - \eta)$
 has one and $\Delta$ jumps from $10$ to $\approx 30$ for any $\eta > 0$.
 (b) By induction: $x_i - y_{i-1} \ge x_{i-1} - y_{i-1} \ge 0$, so the step
@@ -236,7 +284,10 @@ count is non-negative, and floor gives the error bound. Chunked streams
 the induction at chunk boundaries; the encoder restores it by also requiring
 $y_i \ge y_{j}$ for the last reconstruction $y_j$ of the previous chunk,
 falling back to the exact value otherwise. (c) Direct from the
-formula and the min inequality. (d) Direct. $\square$
+formula and the min inequality. (d) Direct. (e) Prometheus computes
+$\Delta$ as $y_l - y_f$ plus $y_{i-1}$ at each detected reset; the
+detected resets and those $y_{i-1}$ are the original's by (b), so the
+floating-point result is identical whatever the inner values. $\square$
 
 The implementation (`budget::rate_enclosure`) does not use the global
 constant; it computes a sound interval enclosure of the formula over the box

@@ -14,6 +14,14 @@
 //! aggregate is not globally Lipschitz in the values (the zero-point
 //! extrapolation divides by the increase), so the tolerance is found by
 //! bisection over a sound interval enclosure of Prometheus' formula.
+//!
+//! Every aggregate except `rate` is non-decreasing in each sample, so a
+//! tolerance only has to hold in one direction (Corollary 1 of
+//! `docs/formal-model.md`): if `f(X)(t)` lies above θ, raising samples
+//! cannot move it below, and vice versa. The budget is therefore one-sided
+//! per evaluation and two-sided per sample: `down[i]` bounds `x_i - y_i`,
+//! `up[i]` bounds `y_i - x_i`. A sample read only by evaluations on one side
+//! of θ is free in the other direction (up to an overflow cap for `sum/avg`).
 
 use std::collections::VecDeque;
 use std::ops::Range;
@@ -26,8 +34,61 @@ const EPS: f64 = f64::EPSILON;
 
 #[derive(Clone, Debug)]
 pub struct Plan {
-    pub budget: Vec<f64>,
+    /// Allowed error below the sample: `x_i - y_i <= down[i]`.
+    pub down: Vec<f64>,
+    /// Allowed error above the sample: `y_i - x_i <= up[i]`.
+    pub up: Vec<f64>,
     pub mode: Mode,
+}
+
+impl Plan {
+    /// Symmetric budget `min(down, up)`: the Theorem 1 box inside the
+    /// one-sided bounds.
+    pub fn budget(&self) -> Vec<f64> {
+        self.down
+            .iter()
+            .zip(&self.up)
+            .map(|(&d, &u)| if u < d { u } else { d })
+            .collect()
+    }
+}
+
+/// Which way an evaluation's tolerance binds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    /// `f(X)(t)` lies on the upper side of θ: only lowering samples can flip it.
+    Down,
+    /// Lower side: only raising samples can flip it.
+    Up,
+    /// Not monotone (`rate`) or undefined (NaN): both directions.
+    Both,
+}
+
+impl Side {
+    /// Side of an evaluation with value `v` and tolerance `tau`. `last` and
+    /// `min/max` are evaluated exactly, so their side is certain even at
+    /// `v == θ`. For `sum/avg` a zero tolerance means `v` is within rounding
+    /// of θ, and another summation order may put it on the other side.
+    fn of(rule: &Rule, v: f64, tau: f64) -> Side {
+        if rule.agg == Agg::Rate || v.is_nan() || rule.threshold.is_nan() {
+            return Side::Both;
+        }
+        if matches!(rule.agg, Agg::SumOverTime | Agg::AvgOverTime) && (tau.is_nan() || tau <= 0.0) {
+            return Side::Both;
+        }
+        match (rule.cmp, rule.cmp.holds(v, rule.threshold)) {
+            (Cmp::Gt | Cmp::Ge, true) | (Cmp::Lt | Cmp::Le, false) => Side::Down,
+            _ => Side::Up,
+        }
+    }
+
+    fn binds_down(self) -> bool {
+        self != Side::Up
+    }
+
+    fn binds_up(self) -> bool {
+        self != Side::Down
+    }
 }
 
 /// Budget for `series` under `rules`. Rules other than `rate` are protected at
@@ -40,31 +101,68 @@ pub struct Plan {
 /// form a contiguous run, turning `min` over them into a sliding minimum.
 /// [`plan_naive`] is the direct `O(n * window)` definition.
 pub fn plan(series: &Series, rules: &[Rule], grid: &[i64]) -> Plan {
-    let mut budget = vec![f64::INFINITY; series.len()];
+    let mut down = vec![f64::INFINITY; series.len()];
+    let mut up = down.clone();
     for rule in rules {
         let ts_eval = instants(rule, series, grid);
-        let (supports, taus) = tolerances(rule, series, &ts_eval);
-        min_over_supports(&mut budget, &supports, &taus);
+        let (supports, taus, sides) = tolerances(rule, series, &ts_eval);
+        let pick = |binds: fn(Side) -> bool| -> Vec<f64> {
+            taus.iter()
+                .zip(&sides)
+                .map(|(&t, &s)| if binds(s) { t } else { f64::INFINITY })
+                .collect()
+        };
+        if rule.agg == Agg::Rate {
+            // Only the window's ends enter `rate` (see `rate_ends`).
+            for (r, &tau) in supports.iter().zip(&taus) {
+                for i in rate_ends(r) {
+                    down[i] = down[i].min(tau);
+                    up[i] = up[i].min(tau);
+                }
+            }
+        } else {
+            min_over_supports(&mut down, &supports, &pick(Side::binds_down));
+            min_over_supports(&mut up, &supports, &pick(Side::binds_up));
+        }
     }
-    finish(series, rules, budget)
+    finish(series, rules, grid, down, up)
 }
 
 /// Direct evaluation of the budget definition, one instant at a time.
 pub fn plan_naive(series: &Series, rules: &[Rule], grid: &[i64]) -> Plan {
-    let mut budget = vec![f64::INFINITY; series.len()];
+    let mut down = vec![f64::INFINITY; series.len()];
+    let mut up = down.clone();
     for rule in rules {
         for t in instants(rule, series, grid) {
             if let Some((support, tau)) = tolerance(rule, &series.ts, &series.vals, t) {
-                for b in &mut budget[support] {
-                    *b = b.min(tau);
+                let v = rule.eval(&series.ts, &series.vals, t).unwrap();
+                let side = Side::of(rule, v, tau);
+                let support: Vec<usize> = if rule.agg == Agg::Rate {
+                    rate_ends(&support).collect()
+                } else {
+                    support.collect()
+                };
+                for i in support {
+                    if side.binds_down() {
+                        down[i] = down[i].min(tau);
+                    }
+                    if side.binds_up() {
+                        up[i] = up[i].min(tau);
+                    }
                 }
             }
         }
     }
-    finish(series, rules, budget)
+    finish(series, rules, grid, down, up)
 }
 
-fn finish(series: &Series, rules: &[Rule], mut budget: Vec<f64>) -> Plan {
+fn finish(
+    series: &Series,
+    rules: &[Rule],
+    grid: &[i64],
+    mut down: Vec<f64>,
+    mut up: Vec<f64>,
+) -> Plan {
     let mode = if rules.iter().any(|r| r.agg == Agg::Rate) {
         Mode::Counter
     } else {
@@ -75,12 +173,45 @@ fn finish(series: &Series, rules: &[Rule], mut budget: Vec<f64>) -> Plan {
         // that the reconstruction has exactly the same resets.
         for i in 1..series.len() {
             if series.vals[i] < series.vals[i - 1] {
-                budget[i - 1] = 0.0;
-                budget[i] = 0.0;
+                for j in [i - 1, i] {
+                    down[j] = 0.0;
+                    up[j] = 0.0;
+                }
             }
         }
     }
-    Plan { budget, mode }
+    // `sum/avg` of the reconstruction must stay finite (see
+    // `lipschitz_tolerance`); a free direction is capped at the overflow
+    // headroom of the windows reading the sample.
+    for rule in rules {
+        if matches!(rule.agg, Agg::SumOverTime | Agg::AvgOverTime) {
+            let cap = headroom_cap(series, rule, grid);
+            for (b, c) in down
+                .iter_mut()
+                .chain(up.iter_mut())
+                .zip(cap.iter().chain(&cap))
+            {
+                *b = b.min(*c);
+            }
+        }
+    }
+    Plan { down, up, mode }
+}
+
+/// Samples of a `rate` window whose values enter the result: the first and
+/// the last. Inner samples enter only through the reset comparisons and the
+/// values before resets, and [`Mode::Counter`] preserves both (Proposition 1
+/// (b): the reconstruction is non-decreasing wherever the original is, and
+/// both samples around a reset are exact). So an inner sample is free as
+/// long as it stays in `[y_{i-1}, x_i]`, which the counter quantizer
+/// enforces anyway.
+fn rate_ends(r: &Range<usize>) -> impl Iterator<Item = usize> {
+    let ends = if r.is_empty() {
+        None
+    } else {
+        Some([r.start, r.end - 1])
+    };
+    ends.into_iter().flatten()
 }
 
 /// Instants at which `rule` is protected, sorted.
@@ -92,9 +223,35 @@ pub fn instants(rule: &Rule, series: &Series, grid: &[i64]) -> Vec<i64> {
     })
 }
 
-/// Supports and tolerances `tau_R(t)` at sorted instants `ts_eval`
-/// (`+inf` where the rule yields no sample).
-pub fn tolerances(rule: &Rule, series: &Series, ts_eval: &[i64]) -> (Vec<Range<usize>>, Vec<f64>) {
+/// Per-sample cap `(MAX / 2 - sum |x|) / n` over the `sum/avg` windows of
+/// `rule` reading each sample: keeps `sum |y|` of every window below
+/// `MAX / 2` whatever direction the error takes.
+fn headroom_cap(series: &Series, rule: &Rule, grid: &[i64]) -> Vec<f64> {
+    let ts_eval = instants(rule, series, grid);
+    let supports = rule.supports(&series.ts, &ts_eval);
+    let mut abs_sum = SlidingWindow::new(|a, b| a + b, 0.0);
+    let mut prev = 0..0;
+    let caps: Vec<f64> = supports
+        .iter()
+        .map(|r| {
+            abs_sum.slide_map(&series.vals, &prev, r, f64::abs);
+            prev = r.clone();
+            let n = r.len().max(1) as f64;
+            ((f64::MAX / 2.0 - abs_sum.get()) / n).next_down().max(0.0)
+        })
+        .collect();
+    let mut out = vec![f64::INFINITY; series.len()];
+    min_over_supports(&mut out, &supports, &caps);
+    out
+}
+
+/// Supports, tolerances `tau_R(t)` and their [`Side`] at sorted instants
+/// `ts_eval` (`+inf` where the rule yields no sample).
+pub fn tolerances(
+    rule: &Rule,
+    series: &Series,
+    ts_eval: &[i64],
+) -> (Vec<Range<usize>>, Vec<f64>, Vec<Side>) {
     let (ts, x) = (&series.ts, &series.vals);
     let supports = rule.supports(ts, ts_eval);
     let values = rule.eval_many(ts, x, ts_eval);
@@ -122,8 +279,13 @@ pub fn tolerances(rule: &Rule, series: &Series, ts_eval: &[i64]) -> (Vec<Range<u
                 agg => lipschitz_tolerance(agg, th, r.len(), 0.0, v),
             }
         })
+        .collect::<Vec<f64>>();
+    let sides = values
+        .iter()
+        .zip(&taus)
+        .map(|(v, &tau)| v.map_or(Side::Both, |v| Side::of(rule, v, tau)))
         .collect();
-    (supports, taus)
+    (supports, taus, sides)
 }
 
 /// `budget[i] = min(budget[i], min { taus[k] : i in supports[k] })` for

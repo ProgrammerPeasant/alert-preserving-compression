@@ -8,6 +8,14 @@
 //! The guarantee `|y_i - x_i| <= eps_i` is therefore enforced on the actual
 //! floating-point reconstruction, not derived from an idealized bound.
 //!
+//! The budget may be asymmetric (`down[i]` below the sample, `up[i]` above,
+//! see [`crate::budget`]), and then the admissible reconstructions of a
+//! sample form an interval that need not be centred on it. Besides rounding
+//! to the nearest grid point, the encoder tries a *lazy* step choice: the
+//! admissible step count closest to the predicted one (zero, or the previous
+//! step in delta mode). A sample read only by evaluations on one side of θ
+//! then costs nothing until the prediction leaves its half-line.
+//!
 //! In [`Mode::Counter`] the quantizer rounds towards `-inf` relative to the
 //! previous reconstruction with a non-negative step count, so the output is
 //! non-decreasing wherever the input is and `y_i <= x_i` always: no spurious
@@ -81,11 +89,72 @@ pub fn encode_chunk(
     coding: Coding,
     floor: f64,
 ) -> Encoded {
-    assert_eq!(vals.len(), budget.len());
+    encode_bounds(vals, budget, budget, mode, coding, floor)
+}
+
+/// [`encode_chunk`] with an asymmetric budget: the decoded value satisfies
+/// `x_i - down[i] <= y_i <= x_i + up[i]` (checked in the same form as the
+/// symmetric `|y_i - x_i| <= eps_i`, which is the case `down == up`).
+pub fn encode_bounds(
+    vals: &[f64],
+    down: &[f64],
+    up: &[f64],
+    mode: Mode,
+    coding: Coding,
+    floor: f64,
+) -> Encoded {
+    encode_steps(vals, down, up, mode, coding, floor, Steps::Adaptive)
+}
+
+/// Step choices the encoder may use in a lossy block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Steps {
+    /// Round to the nearest grid point only (the closed-loop DPCM of
+    /// earlier versions). Its errors are unbiased, which suits a symmetric
+    /// budget that is not derived from the rules.
+    Nearest,
+    /// Nearest or lazy, per block by exact cost (the default).
+    Adaptive,
+}
+
+/// [`encode_bounds`] with a choice of [`Steps`].
+#[allow(clippy::too_many_arguments)]
+pub fn encode_steps(
+    vals: &[f64],
+    down: &[f64],
+    up: &[f64],
+    mode: Mode,
+    coding: Coding,
+    floor: f64,
+    steps: Steps,
+) -> Encoded {
+    assert_eq!(vals.len(), down.len());
+    assert_eq!(vals.len(), up.len());
     assert!(vals.len() <= u32::MAX as usize);
+    let b = Bounds { down, up };
+    let strategies: &[(bool, bool)] = match steps {
+        Steps::Nearest => &STRATEGIES[..2],
+        Steps::Adaptive => &STRATEGIES,
+    };
     match coding {
-        Coding::Fixed => encode_fixed(vals, budget, mode, floor),
-        Coding::Entropy => encode_entropy(vals, budget, mode, floor),
+        Coding::Fixed => encode_fixed(vals, b, mode, floor, strategies),
+        Coding::Entropy => encode_entropy(vals, b, mode, floor, strategies),
+    }
+}
+
+/// Per-sample error bounds of one stream (or block).
+#[derive(Clone, Copy)]
+struct Bounds<'a> {
+    down: &'a [f64],
+    up: &'a [f64],
+}
+
+impl<'a> Bounds<'a> {
+    fn blocks(self) -> impl Iterator<Item = Bounds<'a>> {
+        self.down
+            .chunks(BLOCK)
+            .zip(self.up.chunks(BLOCK))
+            .map(|(down, up)| Bounds { down, up })
     }
 }
 
@@ -97,20 +166,29 @@ pub fn decode(bytes: &[u8]) -> Vec<f64> {
     }
 }
 
-fn encode_fixed(vals: &[f64], budget: &[f64], mode: Mode, mut floor: f64) -> Encoded {
+fn encode_fixed(
+    vals: &[f64],
+    budget: Bounds,
+    mode: Mode,
+    mut floor: f64,
+    strategies: &[(bool, bool)],
+) -> Encoded {
     let mut w = BitWriter::new();
     w.write(0, 1);
     w.write((mode == Mode::Counter) as u64, 1);
     w.write(vals.len() as u64, 32);
     let mut y_prev = 0.0f64;
     let mut xor = XorState::default();
-    for (xs, eps) in vals.chunks(BLOCK).zip(budget.chunks(BLOCK)) {
+    for (xs, eps) in vals.chunks(BLOCK).zip(budget.blocks()) {
         let lossless_bits = 1 + xor.cost(xs);
-        let best = candidate_exponents(eps, mode)
+        let best = candidate_exponents(xs, eps, y_prev, mode)
             .into_iter()
             .flat_map(|e| {
-                [false, true].map(|delta| plan_lossy(xs, eps, y_prev, floor, e, delta, mode))
+                strategies
+                    .iter()
+                    .map(move |&(delta, lazy)| (e, delta, lazy))
             })
+            .map(|(e, delta, lazy)| plan_lossy(xs, eps, y_prev, floor, e, delta, lazy, mode))
             .min_by_key(|p| p.bits);
         match best {
             Some(p) if p.bits < lossless_bits => {
@@ -275,14 +353,20 @@ fn put_lossy_entropy<S: Sink>(s: &mut S, p: &LossyPlan, e_prev: i32) {
     }
 }
 
-fn encode_entropy(vals: &[f64], budget: &[f64], mode: Mode, mut floor: f64) -> Encoded {
+fn encode_entropy(
+    vals: &[f64],
+    budget: Bounds,
+    mode: Mode,
+    mut floor: f64,
+    strategies: &[(bool, bool)],
+) -> Encoded {
     let mut out = vec![0x80 | (mode == Mode::Counter) as u8];
     put_varint(&mut out, vals.len() as u64);
     let mut rc = RcEncoder::new(Models::new(N_CTX), out);
     let mut y_prev = 0.0f64;
     let mut e_prev = 0i32;
     let mut xor = XorState::default();
-    for (xs, eps) in vals.chunks(BLOCK).zip(budget.chunks(BLOCK)) {
+    for (xs, eps) in vals.chunks(BLOCK).zip(budget.blocks()) {
         // Plans are compared by their exact adaptive cost from the current
         // model state, so the choice accounts for what the models learned.
         let mut lossless = CostSink::new(rc.models().clone());
@@ -293,9 +377,9 @@ fn encode_entropy(vals: &[f64], budget: &[f64], mode: Mode, mut floor: f64) -> E
             x.put(&mut lossless, v);
         }
         let mut best: Option<(f64, LossyPlan)> = None;
-        for e in candidate_exponents(eps, mode) {
-            for delta in [false, true] {
-                let p = plan_lossy(xs, eps, y_prev, floor, e, delta, mode);
+        for e in candidate_exponents(xs, eps, y_prev, mode) {
+            for &(delta, lazy) in strategies {
+                let p = plan_lossy(xs, eps, y_prev, floor, e, delta, lazy, mode);
                 let mut c = CostSink::new(rc.models().clone());
                 put_lossy_entropy(&mut c, &p, e_prev);
                 if best.as_ref().is_none_or(|(b, _)| c.bits < *b) {
@@ -401,21 +485,40 @@ pub(crate) fn get_varint(bytes: &[u8], pos: &mut usize) -> u64 {
     panic!("varint overflow")
 }
 
-/// Candidate grid exponents: for each budget, the largest `e` with a
-/// provably admissible step (`q <= 2 eps` for rounding, `q <= eps` for the
-/// counter floor quantizer).
-fn candidate_exponents(eps: &[f64], mode: Mode) -> Vec<i32> {
-    let scale = if mode == Mode::Gauge { 2.0 } else { 1.0 };
-    let mut es: Vec<i32> = eps
+/// `(delta, lazy)` step strategies tried for every grid; [`Steps::Nearest`]
+/// uses the first two.
+const STRATEGIES: [(bool, bool); 4] = [(false, false), (true, false), (false, true), (true, true)];
+
+/// Candidate grid exponents: for each sample, the largest `e` whose grid
+/// provably hits its admissible interval (`q <= down + up` when rounding a
+/// gauge, `q <= down` for the counter floor quantizer). An unbounded
+/// interval is capped at twice the block's magnitude: a coarser grid only
+/// moves the reconstruction further from the data.
+fn candidate_exponents(xs: &[f64], eps: Bounds, y_prev: f64, mode: Mode) -> Vec<i32> {
+    let mag = xs
         .iter()
-        .filter(|&&e| e > 0.0)
-        .map(|&e| {
-            let s = e * scale;
-            if s.is_finite() {
-                (s.log2().floor() as i32).clamp(E_MIN, E_MAX)
+        .chain([&y_prev])
+        .filter(|v| v.is_finite())
+        .fold(0.0f64, |m, v| m.max(v.abs()));
+    let cap = 2.0 * mag.max(f64::MIN_POSITIVE);
+    let mut es: Vec<i32> = eps
+        .down
+        .iter()
+        .zip(eps.up)
+        .filter_map(|(&d, &u)| {
+            let w = match mode {
+                Mode::Gauge => d.max(0.0) + u.max(0.0),
+                Mode::Counter => d,
+            };
+            if w.is_nan() || w <= 0.0 {
+                return None;
+            }
+            let w = w.min(cap);
+            Some(if w.is_finite() {
+                (w.log2().floor() as i32).clamp(E_MIN, E_MAX)
             } else {
                 E_MAX
-            }
+            })
         })
         .collect();
     // A finer step is admissible wherever a coarser one is, and the cost is
@@ -464,13 +567,15 @@ impl LossyPlan {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_lossy(
     xs: &[f64],
-    eps: &[f64],
+    eps: Bounds,
     mut y_prev: f64,
     mut floor: f64,
     e: i32,
     delta: bool,
+    lazy: bool,
     mode: Mode,
 ) -> LossyPlan {
     let q = 2f64.powi(e);
@@ -478,8 +583,9 @@ fn plan_lossy(
     let mut k_prev = 0i64;
     let mut max_z = 0u64;
     let mut escapes = 0usize;
-    for (&x, &eb) in xs.iter().zip(eps) {
-        match quantize(x, eb, y_prev, floor, q, mode) {
+    for ((&x, &down), &up) in xs.iter().zip(eps.down).zip(eps.up) {
+        let pref = lazy.then_some(if delta { k_prev } else { 0 });
+        match quantize(x, down, up, y_prev, floor, q, mode, pref) {
             Some((k, y)) => {
                 let z = zigzag(if delta { k - k_prev } else { k });
                 max_z = max_z.max(z);
@@ -509,37 +615,70 @@ fn plan_lossy(
 }
 
 /// One closed-loop quantization step; `None` means the sample must escape.
-/// In [`Mode::Counter`] the output must not fall below `floor` (the previous
-/// reconstruction, or the previous chunk's last one; NaN means none).
+/// The reconstruction `y` must satisfy `x - down <= y <= x + up` (checked as
+/// `x - y <= down` or `y - x <= up`). Without `pref` the step count rounds
+/// `(x - y_prev) / q` (towards `-inf` for counters); with `pref` it is the
+/// admissible count closest to `pref`, falling back to rounding. In
+/// [`Mode::Counter`] also `y <= x`, `y >= y_prev`, and `y` must not fall
+/// below `floor` (the previous chunk's last reconstruction; NaN means none).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn quantize(
     x: f64,
-    eps: f64,
+    down: f64,
+    up: f64,
     y_prev: f64,
     floor: f64,
     q: f64,
     mode: Mode,
+    pref: Option<i64>,
 ) -> Option<(i64, f64)> {
-    if eps.is_nan() || eps <= 0.0 || !x.is_finite() || !y_prev.is_finite() {
+    if down.is_nan() || up.is_nan() || !x.is_finite() || !y_prev.is_finite() {
+        return None;
+    }
+    let (down, up) = match mode {
+        Mode::Gauge => (down, up),
+        Mode::Counter => (down, 0.0),
+    };
+    if down <= 0.0 && up <= 0.0 {
         return None;
     }
     let r = (x - y_prev) / q;
-    let k = match mode {
+    let nearest = match mode {
         Mode::Gauge => r.round(),
         Mode::Counter => r.floor(),
     };
-    if k.is_nan() || k.abs() > K_MAX || (mode == Mode::Counter && k < 0.0) {
-        return None;
-    }
-    // Reconstruct from the integer the decoder sees: `k` may be `-0.0`, and
-    // `-0.0 + -0.0 * q` keeps the sign the decoder's `-0.0 + 0.0` drops,
-    // which would desynchronize the XOR reference of a following block.
-    let k = k as i64;
-    let y = y_prev + k as f64 * q;
-    let ok = match mode {
-        Mode::Gauge => (y - x).abs() <= eps,
-        Mode::Counter => y <= x && x - y <= eps && y >= y_prev && (floor.is_nan() || y >= floor),
+    let check = |k: f64| -> Option<(i64, f64)> {
+        if k.is_nan() || k.abs() > K_MAX || (mode == Mode::Counter && k < 0.0) {
+            return None;
+        }
+        // Reconstruct from the integer the decoder sees: `k` may be `-0.0`,
+        // and `-0.0 + -0.0 * q` keeps the sign the decoder's `-0.0 + 0.0`
+        // drops, which would desynchronize the XOR reference of a following
+        // block.
+        let k = k as i64;
+        let y = y_prev + k as f64 * q;
+        let within = if y >= x { y - x <= up } else { x - y <= down };
+        let ok = within
+            && match mode {
+                Mode::Gauge => true,
+                Mode::Counter => y <= x && y >= y_prev && (floor.is_nan() || y >= floor),
+            };
+        ok.then_some((k, y))
     };
-    ok.then_some((k, y))
+    if let Some(p) = pref {
+        // Admissible counts, up to rounding of the bounds (checked anyway).
+        let lo = ((x - down - y_prev) / q).ceil();
+        let hi = ((x + up - y_prev) / q).floor();
+        if lo <= hi {
+            let k = (p as f64).clamp(lo, hi);
+            // One step inwards in case the rounded bound was off by one.
+            let inward = if k > nearest { k - 1.0 } else { k + 1.0 };
+            if let Some(out) = check(k).or_else(|| check(inward)) {
+                return Some(out);
+            }
+        }
+    }
+    check(nearest)
 }
 
 pub(crate) fn zigzag(v: i64) -> u64 {

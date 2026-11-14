@@ -25,6 +25,7 @@ ALL=(
   theorem1_last_{gt,ge,lt,le}
   extremum_lipschitz_{last,max_over_time,min_over_time}
   extremum_attained_{max,min}_over_time extremum_pair_{max,min} sub_monotone
+  eval_monotone_{last,max_over_time,min_over_time}
   tolerance_of_extremum_{last,max_over_time,min_over_time}
   range_coder_{bit,bits3,raw8,raw16,raw20,mixed}
   bit_writer_matches_spec bit_reader_matches_spec bit_spec_roundtrip
