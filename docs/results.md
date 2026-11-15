@@ -1,114 +1,91 @@
 # Results (synthetic data)
 
-Produced by `cargo run --release -p alertsafe-bench -- all 7` (H6: see its section) on one core of a
-desktop CPU (Linux 6.18, rustc 1.93). Data are seeded synthetic series from
-`crates/alertsafe-bench/src/gen.rs`; they are placeholders for real cluster
-traces and open rule sets (see the roadmap in the README). Treat the numbers
-as a smoke test of the method, not as evidence for the thesis. Real
-Prometheus series: [`results-real.md`](results-real.md).
+Produced by `cargo run --release -p alertsafe-bench -- h1|h2|h4|h5|h7 7`
+(in parallel) and `h3 7` alone on one core of a desktop CPU (16 cores,
+Linux 6.18, rustc 1.93); H6: see its section. Data are seeded synthetic
+series from `crates/alertsafe-bench/src/gen.rs`; they are placeholders for
+real cluster traces. Treat the numbers as a smoke test of the method, not as
+evidence for the thesis. Real Prometheus series:
+[`results-real.md`](results-real.md); ablation of the codec components:
+[`ablation.md`](ablation.md).
 
-Regenerated 2026-11-02 after two coder changes found on real data: finer
-quantizer steps among the block candidates (`FINER_STEPS`) and a search
-over budget scalings ½, ¼, ⅛ (`Options::scales`), see `results-real.md`.
-The Compression Safeguards side of H6 was rerun and is unchanged.
+Regenerated 2026-11-15 for the one-sided budget and lazy step choice
+(commit `35ba3da`; Corollary 1 and Proposition 1(e) of `formal-model.md`).
+The SZ3+SG side of H6 was rerun and is unchanged. Previous version
+(2026-11-02, box budget): rule-aware 0.22–0.70 bits per value on the four
+original datasets, 4.68 on `requests-gappy`.
 
 **Reading the numbers.**
 
 - All columns use the same entropy-coded format (adaptive binary range
   coding of block decisions and DPCM residuals, `alertsafe-codec::rc`), so
   baselines and the rule-aware codec differ only in the error budget.
-  `rule-aware (fixed)` is the ablation with fixed-width residual codes.
-- H1 (one stream per series): rule-aware is 4.5–38× smaller than the
-  largest uniform bound with the same guarantee and 4.5–24× smaller than a
-  uniform bound tuned on the same data to zero mismatches (which has no
-  guarantee on other data).
-- Entropy coding removes the ~1 bit/value floor of fixed-width codes: the
-  rule-aware rate drops from 1.35–2.19 to 0.22–0.70 bits per value (3–6×).
-  Far from thresholds the residuals are almost all zero and cost ~0.01 bit
-  each; the rate is dominated by the samples near thresholds. Uniform bounds
-  gain much less (e.g. `cpu` tuned 3.80 → 2.55), so the rule-aware advantage
-  grows. The high-resolution prediction of the gain over uniform-safe
-  (formal model, §8) still over-predicts: by 2.6–3.4 bits on the gauge
-  datasets and by 6.5 on `requests`, where the uniform-safe bound is
-  already cheap (2.18 bits per value).
+  `rule-aware (fixed)` is the ablation with fixed-width residual codes. The
+  uniform sweep takes, per point, the smaller safe output of nearest and
+  lazy step choice (lazy biases errors, which a symmetric bound does not
+  account for); H4/H5 reuse the step choice of the tuned point.
+- H1 (one stream per series): rule-aware 0.07–0.21 bits per value on the
+  gauges, 33–36× below a uniform bound tuned on the same data (which has no
+  guarantee elsewhere) and 61–158× below the largest uniform bound with the
+  same guarantee. On the counters the gain is 1.7× (`requests`) and 3.2×
+  (`requests-gappy`); the tuned uniform bound gained from the lazy step
+  choice too (`requests` 2.17 → 0.81).
+- Entropy coding removes the ~1 bit/value floor of fixed-width codes:
+  1.30–6.73 → 0.07–2.92 bits per value. The high-resolution prediction
+  of the gain over uniform-safe (formal model, §8) over-predicts by 2.3–3.3
+  bits on gauges and 6.7 on `requests`.
 - H2: the rule-aware rate grows with the share of samples near the threshold
-  (0.06 → 2.94 bits per value as `near` goes 0.1% → 10.2%), so the gain over
-  lossless falls from ~900× to 18×. The gain over the tuned uniform bound is
-  noisy because the tuned bound itself jumps between sweep points.
-- H3: the entropy-coded decode runs at 2.0–2.5 GB/s (fixed: 3.0–3.4 GB/s) and
-  encode at 46–68 MB/s (fixed: 65–112 MB/s); block plans are compared by
-  their exact adaptive cost over three times as many candidate steps as
-  before (100–185 MB/s then). The `O(n)` budget runs at 50–63 MB/s and the
-  end-to-end verified `compress` at 5–9 MB/s: it encodes four scalings of
-  the budget and keeps the smallest (26–44 MB/s with one).
-- H4: Prometheus cuts chunks at 120 samples, and every chunk must decode on
-  its own. Short streams cost more for three reasons. Each has a fixed
-  overhead, now 3–4 bytes (format byte, LEB128 length, a minimal coder
-  flush; it was 10). Each starts the models from p = 1/2. And each restates
-  an absolute first value. At 120 samples the rule-aware rate is 0.53–1.03
-  bits per value (whole series: 0.22–0.70), and the gain over a tuned
-  uniform bound under the same chunking is 3.1–11×. The chunking costs the
-  rule-aware codec relatively more because its payload is so small. Before
-  this change the 120-sample rates were 0.66–1.10 on gauges and 2.86 on
-  `requests`. Two fixes brought them down. Model rates now start at 1/2 and
-  slow to 1/32 (a count-based estimate), which leaves long streams
-  unchanged. And counter chunks now continue the previous chunk's
-  reconstruction: without that, the output could drop at a chunk boundary
-  and `rate` saw a spurious reset (250 repairs; see formal model, Prop. 1).
-- H5: the uncapped rule-aware reconstruction is only good for the rules. Its
-  RMSE is 7–17% of the value range on gauges and the maximum error reaches
-  45%. Capping the budget at the tuned uniform ε (`Options::max_error`)
-  costs within 0–5% of that uniform bound, so once a pointwise bound tighter
-  than the rule budget is required, rule awareness adds a guarantee rather
-  than a rate gain. At a fixed ε = 10⁻³ of the range the uniform bound
-  changes decisions on `memory` (17 states) and `requests` (1021 states).
-  The capped rule-aware codec keeps every decision for 0.03–0.15 extra bits
-  per value.
+  (0.01 → 0.66 bits per value as `near` goes 0.1% → 10.2%); the gain over
+  lossless falls from ~4 800× to 81×. The gain over the tuned uniform bound
+  is noisy because the tuned bound jumps between sweep points.
+- H3: decode 2.4–3.0 GB/s (fixed: 3.6 GB/s). Encode 30–32 MB/s (fixed:
+  40–46): every grid is tried with four step strategies (it was 46–68 MB/s
+  with two). The `O(n)` budget runs at 46–72 MB/s. The end-to-end verified
+  `compress` runs at 4–6 MB/s, because by default it encodes four scalings
+  of the budget (`Options::scales`); without that search it runs at
+  14–20 MB/s, and the ablation shows the search no longer changes the size
+  (smaller on 1 of 31 datasets by ≤ 0.006 bits per value).
+- H4: in 120-sample chunks (Prometheus) the rule-aware rate is 0.29–0.48
+  on gauges, 0.97 on `requests`, 3.64 on `requests-gappy` (whole series:
+  0.07–2.92), 1.7–16× below the tuned uniform bound under the same
+  chunking. Chunking costs the rule-aware codec relatively more because its
+  payload is so small (fixed 3–4 bytes and model warm-up per chunk).
+- H5: the uncapped reconstruction is only good for the rules, now more so:
+  with lazy steps a sample free in one direction drifts until a bound stops
+  it (RMSE 39% / 84% of the range on `cpu` / `memory`, max error up to 3.5×
+  the range). Capping at the tuned uniform ε (`Options::max_error`) costs
+  within 0–2% of that uniform bound (on `cpu` the cap is 14% cheaper:
+  lazy steps). The tuned uniform bound, applied in 120-sample chunks
+  instead of the whole-series encoding it was tuned on, changes decisions
+  on `memory` (3 states) and `requests` (1): a bound tuned on one encoding
+  does not even transfer to the same data. At ε = 10⁻³ of the range the
+  uniform bound changes 17, 1020 and 10 655 states on `memory`,
+  `requests`, `requests-gappy`; the capped rule-aware codec keeps every
+  decision for 0.01–0.07 extra bits per value (and costs 3.64 instead of
+  1.18 on `requests-gappy`, where the uniform bound is far from safe).
 - The analytic budget needed zero repairs on every dataset and chunk size.
-- H6 (Compression Safeguards, the closest related work): SZ3 wrapped in
-  safeguards translated from the rules keeps every decision at every point
-  of the sweep, on all four datasets, and it **beats the analytic
-  rule-aware budget** on the gauges (0.16 vs 0.30, 0.20 vs 0.22, 0.57 vs
-  0.70 bits per value). The best configuration is almost always SZ3 with a
-  bound as large as the range, i.e. the safeguards' corrections do all the
-  work. The backends are not the reason: at ε = range our coder costs
-  0.01–0.20 bits per value, like SZ3. The reason is that the Theorem 1
-  budget is a box that holds for the worst case of all errors at once,
-  while the safeguards correct only the evaluations that actually changed.
-  Even the heuristic `rate` translation (no extrapolation, see `run.py`)
-  never changed a decision on the synthetic counter. The safeguards are
-  1–35 s per 40k samples (`memory`: 121-sample stencils) against ~10 ms
-  for the codec.
-- H7 answers H6 inside the codec (`Options::slack`): scale the analytic
-  budget by κ and let verify-and-repair halve it on the supports of the
-  flipped evaluations only, never below the analytic budget. At κ = 1024
-  this needs up to 23 rounds (one encode + verify each) and gives
-  0.11–0.48 bits per value on the four original datasets: 1.4–1.8× below
-  SZ3+SG and 1–2.7× below the analytic budget (on `requests` the best
-  scaling of the analytic budget wins, so κ adds nothing), with the same
-  end-to-end guarantee. In 120-sample chunks it gives 0.33–0.97 (analytic:
-  0.53–1.03). The analytic budget remains what makes the first round sound
-  and bounds the repair (Theorem 1 guarantees that a support entirely
-  within it cannot flip).
-- The verifier must not trust its own summation order. With an optimistic
-  budget a reconstructed `avg_over_time` can land within an ulp of θ, where
-  the sliding sum of the verifier and the left-to-right sum of the reference
-  evaluator disagree (found by proptest). `flipped` therefore accepts a
-  `sum/avg` evaluation only if it is farther from θ than the bound on the
-  difference of any two summation orders (or reads bitwise exact samples),
-  which also covers Prometheus' Kahan summation. The analytic budget keeps
-  twice that margin and never trips it; on H7 the check costs ≤ 0.01 bits
-  per value.
-- `requests-gappy` (8% dropped scrapes, outages of 1–6 min, traffic hovering
-  around the threshold: 157 firings in 7 days) is the hard case. The
-  rule-aware rate is 4.68 bits per value, only 2.0× below the tuned uniform
-  bound, because most evaluations are near θ. It separates the exact `rate`
-  analysis from the heuristic translation: the safeguards keep
-  increase / sampled interval on the right side of θ, but Prometheus
-  extrapolates differently across gaps, so SZ3+SG changes decisions at 11
-  of 13 sweep points (up to 85 states). Its smallest safe point is 8.45 bits
-  per value, 1.8× above the analytic budget and 2.4× above κ = 1024 (3.48),
-  at ~18 s per 40k samples.
+- H6 (Compression Safeguards): SZ3+SG still keeps every decision at every
+  sweep point on the four original datasets, but now the **analytic budget
+  alone is smaller on all five** (0.07 vs 0.16, 0.08 vs 0.20, 0.21 vs 0.57,
+  0.47 vs 0.69, 2.92 vs 8.45). It was larger on the three gauges with the
+  box budget; the one-sided budget and lazy steps removed the gap. κ = 1024
+  is 1.5–4.1× below SZ3+SG. On `requests-gappy` SG's `rate` translation
+  (no extrapolation) changes decisions at 11 of 13 sweep points. SG takes
+  1–24 s per sweep point on 40k samples.
+- H7: κ > 1 now gains little over the analytic budget (0–33%; κ = 1024:
+  0.05–0.46 and 2.72 on `requests-gappy`), because the one-sided budget
+  already leaves most samples free in one direction. Rounds grow with κ
+  (up to 22, and 75 on `requests-gappy`). κ = 2–4 captures most of the
+  gain with ≤ 15 rounds.
+- The verifier must not trust its own summation order (see
+  `lib.rs::flipped`): an optimistic budget can land a `sum/avg` evaluation
+  within an ulp of θ, where summation orders disagree. The analytic budget
+  keeps twice the bound on that difference and never trips it.
+- `requests-gappy` (8% dropped scrapes, outages of 1–6 min, traffic around
+  the threshold: 157 firings in 7 days) is the hard case: 2.92 bits per
+  value, 3.2× below the tuned uniform bound, because most evaluations are
+  near θ.
+
 ## H1: rule-aware vs. uniform error bound (7 days, 15s scrape, 30s eval)
 
 All rule-aware rows have zero changed decisions (asserted). `uniform-safe` is the largest uniform bound
@@ -117,11 +94,11 @@ state mismatches found by sweeping on the same data (no guarantee elsewhere).
 
 | dataset | firings | lossless | uniform-safe | uniform-tuned | rule-aware | rule-aware (fixed) | ×lossless | ×safe | ×tuned | predicted Δbits (safe→aware) | measured Δbits | exact samples | repairs |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| cpu | 8 | 53.96 | 11.57 | 2.55 | 0.30 | 1.44 | 179.3 | 38.4 | 8.5 | 13.81 | 11.27 | 0.00% | 0 |
-| latency | 11 | 55.24 | 7.22 | 5.20 | 0.22 | 1.35 | 255.6 | 33.4 | 24.1 | 10.43 | 7.01 | 0.00% | 0 |
-| memory | 9 | 49.91 | 12.96 | 6.93 | 0.70 | 1.87 | 71.3 | 18.5 | 9.9 | 15.62 | 12.26 | 0.00% | 0 |
-| requests | 4 | 19.68 | 2.18 | 2.17 | 0.48 | 2.19 | 40.6 | 4.5 | 4.5 | 8.24 | 1.69 | 0.01% | 0 |
-| requests-gappy | 157 | 21.76 | 11.47 | 9.47 | 4.68 | 8.26 | 4.7 | 2.5 | 2.0 | 11.03 | 6.79 | 0.02% | 0 |
+| cpu | 8 | 53.96 | 11.57 | 2.55 | 0.07 | 1.31 | 739.0 | 158.4 | 34.9 | 13.81 | 11.49 | 0.00% | 0 |
+| latency | 11 | 55.24 | 7.22 | 2.81 | 0.08 | 1.30 | 710.2 | 92.8 | 36.2 | 10.43 | 7.14 | 0.00% | 0 |
+| memory | 9 | 49.91 | 12.96 | 6.92 | 0.21 | 1.62 | 236.4 | 61.4 | 32.8 | 15.62 | 12.75 | 0.00% | 0 |
+| requests | 4 | 19.68 | 2.02 | 0.81 | 0.47 | 2.17 | 42.3 | 4.3 | 1.7 | 8.28 | 1.55 | 0.01% | 0 |
+| requests-gappy | 157 | 21.76 | 11.46 | 9.46 | 2.92 | 6.73 | 7.5 | 3.9 | 3.2 | 12.58 | 8.54 | 0.02% | 0 |
 
 Values are bits per value (timestamps excluded). Raw float64 is 64 bits. All columns except
 `rule-aware (fixed)` use the entropy-coded format.
@@ -142,14 +119,14 @@ Values are bits per value (timestamps excluded). Raw float64 is 64 bits. All col
 | 9.5e-7 | 16.57 | 0 | 0 | 0 |
 | 3.8e-6 | 14.57 | 0 | 0 | 0 |
 | 1.5e-5 | 12.57 | 0 | 0 | 0 |
-| 6.1e-5 | 10.57 | 0 | 0 | 0 |
-| 2.4e-4 | 8.57 | 0 | 0 | 0 |
-| 9.8e-4 | 6.55 | 0 | 0 | 0 |
+| 6.1e-5 | 10.56 | 0 | 0 | 0 |
+| 2.4e-4 | 8.55 | 0 | 0 | 0 |
+| 9.8e-4 | 6.51 | 0 | 0 | 0 |
 | 3.9e-3 | 4.52 | 0 | 0 | 0 |
 | 1.6e-2 | 2.55 | 0 | 0 | 0 |
-| 6.2e-2 | 1.11 | 11 | 0 | 60 |
-| 2.5e-1 | 0.36 | 156 | 6 | 390 |
-| 1.0e0 | 0.01 | 214 | 4 | 360 |
+| 6.2e-2 | 0.47 | 22 | 0 | 30 |
+| 2.5e-1 | 0.03 | 216 | 4 | 900 |
+| 1.0e0 | 0.01 | 220 | 8 | 0 |
 
 </details>
 
@@ -164,19 +141,19 @@ Values are bits per value (timestamps excluded). Raw float64 is 64 bits. All col
 | 9.3e-10 | 25.25 | 0 | 0 | 0 |
 | 3.7e-9 | 23.25 | 0 | 0 | 0 |
 | 1.5e-8 | 21.25 | 0 | 0 | 0 |
-| 6.0e-8 | 19.25 | 0 | 0 | 0 |
+| 6.0e-8 | 19.24 | 0 | 0 | 0 |
 | 2.4e-7 | 17.24 | 0 | 0 | 0 |
 | 9.5e-7 | 15.24 | 0 | 0 | 0 |
 | 3.8e-6 | 13.24 | 0 | 0 | 0 |
-| 1.5e-5 | 11.24 | 0 | 0 | 0 |
-| 6.1e-5 | 9.23 | 0 | 0 | 0 |
-| 2.4e-4 | 7.22 | 0 | 0 | 0 |
-| 9.8e-4 | 5.20 | 0 | 0 | 0 |
-| 3.9e-3 | 3.19 | 1 | 0 | 0 |
-| 1.6e-2 | 1.48 | 11 | 0 | 210 |
-| 6.2e-2 | 0.40 | 23 | 1 | 330 |
-| 2.5e-1 | 0.05 | 43 | 2 | 330 |
-| 1.0e0 | 0.01 | 150 | 7 | 90 |
+| 1.5e-5 | 11.23 | 0 | 0 | 0 |
+| 6.1e-5 | 9.22 | 0 | 0 | 0 |
+| 2.4e-4 | 7.19 | 0 | 0 | 0 |
+| 9.8e-4 | 5.08 | 0 | 0 | 0 |
+| 3.9e-3 | 2.81 | 0 | 0 | 0 |
+| 1.6e-2 | 0.82 | 4 | 1 | 0 |
+| 6.2e-2 | 0.05 | 32 | 3 | 60 |
+| 2.5e-1 | 0.01 | 130 | 6 | 90 |
+| 1.0e0 | 0.01 | 257 | 11 | 0 |
 
 </details>
 
@@ -195,15 +172,15 @@ Values are bits per value (timestamps excluded). Raw float64 is 64 bits. All col
 | 2.4e-7 | 16.96 | 0 | 0 | 0 |
 | 9.5e-7 | 14.96 | 0 | 0 | 0 |
 | 3.8e-6 | 12.96 | 0 | 0 | 0 |
-| 1.5e-5 | 10.96 | 0 | 0 | 0 |
-| 6.1e-5 | 8.95 | 0 | 0 | 0 |
-| 2.4e-4 | 6.93 | 0 | 0 | 0 |
-| 9.8e-4 | 4.90 | 17 | 0 | 240 |
-| 3.9e-3 | 2.88 | 25 | 0 | 30 |
-| 1.6e-2 | 1.24 | 253 | 1 | 1170 |
-| 6.2e-2 | 0.17 | 362 | 0 | 1590 |
-| 2.5e-1 | 0.03 | 2814 | 3 | 16560 |
-| 1.0e0 | 0.01 | 3100 | 5 | 17310 |
+| 1.5e-5 | 10.95 | 0 | 0 | 0 |
+| 6.1e-5 | 8.94 | 0 | 0 | 0 |
+| 2.4e-4 | 6.92 | 0 | 0 | 0 |
+| 9.8e-4 | 4.83 | 21 | 0 | 240 |
+| 3.9e-3 | 2.61 | 27 | 0 | 30 |
+| 1.6e-2 | 0.27 | 259 | 0 | 1980 |
+| 6.2e-2 | 0.02 | 1196 | 0 | 5040 |
+| 2.5e-1 | 0.01 | 1688 | 5 | 2940 |
+| 1.0e0 | 0.00 | 5311 | 9 | 0 |
 
 </details>
 
@@ -215,22 +192,22 @@ Values are bits per value (timestamps excluded). Raw float64 is 64 bits. All col
 | 1.5e-11 | 19.37 | 0 | 0 | 0 |
 | 5.8e-11 | 17.76 | 0 | 0 | 0 |
 | 2.3e-10 | 15.77 | 0 | 0 | 0 |
-| 9.3e-10 | 13.78 | 0 | 0 | 0 |
+| 9.3e-10 | 13.77 | 0 | 0 | 0 |
 | 3.7e-9 | 11.78 | 0 | 0 | 0 |
-| 1.5e-8 | 9.79 | 0 | 0 | 0 |
-| 6.0e-8 | 7.80 | 0 | 0 | 0 |
-| 2.4e-7 | 5.79 | 0 | 0 | 0 |
-| 9.5e-7 | 3.79 | 0 | 0 | 0 |
-| 3.8e-6 | 2.17 | 0 | 0 | 0 |
-| 1.5e-5 | 1.40 | 2 | 0 | 30 |
-| 6.1e-5 | 0.69 | 4 | 0 | 30 |
-| 2.4e-4 | 0.59 | 27 | 0 | 270 |
+| 1.5e-8 | 9.78 | 0 | 0 | 0 |
+| 6.0e-8 | 7.79 | 0 | 0 | 0 |
+| 2.4e-7 | 5.73 | 0 | 0 | 0 |
+| 9.5e-7 | 3.61 | 0 | 0 | 0 |
+| 3.8e-6 | 1.78 | 0 | 0 | 0 |
+| 1.5e-5 | 0.81 | 0 | 0 | 0 |
+| 6.1e-5 | 0.59 | 6 | 0 | 30 |
+| 2.4e-4 | 0.48 | 16 | 0 | 0 |
 | 9.8e-4 | 0.44 | 1031 | 0 | 270 |
-| 3.9e-3 | 0.19 | 11277 | 160 | 390 |
-| 1.6e-2 | 0.07 | 20143 | 231 | 1200 |
-| 6.2e-2 | 0.03 | 20163 | 58 | 6210 |
-| 2.5e-1 | 0.01 | 20189 | 14 | 29010 |
-| 1.0e0 | 0.01 | 20189 | 4 | 213660 |
+| 3.9e-3 | 0.18 | 11295 | 166 | 210 |
+| 1.6e-2 | 0.07 | 20135 | 229 | 1740 |
+| 6.2e-2 | 0.04 | 20163 | 94 | 2850 |
+| 2.5e-1 | 0.02 | 20189 | 44 | 29010 |
+| 1.0e0 | 0.01 | 20189 | 2 | 151050 |
 
 </details>
 
@@ -244,20 +221,20 @@ Values are bits per value (timestamps excluded). Raw float64 is 64 bits. All col
 | 2.3e-10 | 17.46 | 0 | 0 | 0 |
 | 9.3e-10 | 15.46 | 0 | 0 | 0 |
 | 3.7e-9 | 13.46 | 0 | 0 | 0 |
-| 1.5e-8 | 11.46 | 0 | 0 | 0 |
-| 6.0e-8 | 9.47 | 0 | 0 | 0 |
-| 2.4e-7 | 7.46 | 1 | 0 | 0 |
-| 9.5e-7 | 5.43 | 14 | 0 | 60 |
-| 3.8e-6 | 3.50 | 67 | 2 | 270 |
-| 1.5e-5 | 2.50 | 326 | 5 | 16410 |
-| 6.1e-5 | 1.42 | 1080 | 18 | 3630 |
-| 2.4e-4 | 0.86 | 4412 | 81 | 15630 |
-| 9.8e-4 | 0.65 | 11065 | 152 | 7530 |
-| 3.9e-3 | 0.29 | 19770 | 150 | 11370 |
-| 1.6e-2 | 0.12 | 25256 | 489 | 4620 |
-| 6.2e-2 | 0.04 | 26403 | 203 | 5160 |
-| 2.5e-1 | 0.02 | 26587 | 135 | 22260 |
-| 1.0e0 | 0.02 | 26767 | 126 | 119880 |
+| 1.5e-8 | 11.45 | 0 | 0 | 0 |
+| 6.0e-8 | 9.46 | 0 | 0 | 0 |
+| 2.4e-7 | 7.44 | 2 | 0 | 0 |
+| 9.5e-7 | 5.35 | 8 | 0 | 60 |
+| 3.8e-6 | 3.28 | 66 | 3 | 60 |
+| 1.5e-5 | 2.28 | 404 | 8 | 3600 |
+| 6.1e-5 | 1.40 | 1025 | 14 | 7020 |
+| 2.4e-4 | 0.83 | 4364 | 78 | 15630 |
+| 9.8e-4 | 0.58 | 13172 | 123 | 15120 |
+| 3.9e-3 | 0.29 | 19745 | 157 | 12750 |
+| 1.6e-2 | 0.12 | 25236 | 490 | 5250 |
+| 6.2e-2 | 0.07 | 26187 | 278 | 4920 |
+| 2.5e-1 | 0.04 | 26513 | 182 | 20040 |
+| 1.0e0 | 0.02 | 26793 | 126 | 242190 |
 
 </details>
 
@@ -267,28 +244,28 @@ Values are bits per value (timestamps excluded). Raw float64 is 64 bits. All col
 
 | θ | incidents/day | firings | near | lossless | uniform-tuned | rule-aware | ×lossless | ×tuned |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0.55 | 0.5 | 10 | 7.6% | 53.92 | 7.55 | 2.09 | 25.8 | 3.6 |
-| 0.65 | 0.5 | 1 | 0.6% | 53.92 | 3.51 | 0.44 | 121.9 | 7.9 |
-| 0.75 | 0.5 | 1 | 0.2% | 53.92 | 0.67 | 0.13 | 427.9 | 5.3 |
-| 0.85 | 0.5 | 1 | 0.1% | 53.92 | 0.01 | 0.06 | 943.5 | 0.1 |
-| 0.95 | 0.5 | 1 | 0.1% | 53.92 | 7.55 | 0.06 | 836.1 | 117.1 |
-| 0.55 | 2 | 20 | 8.3% | 53.75 | 9.55 | 2.21 | 24.3 | 4.3 |
-| 0.65 | 2 | 12 | 2.0% | 53.75 | 5.53 | 0.83 | 64.6 | 6.7 |
-| 0.75 | 2 | 10 | 1.7% | 53.75 | 3.52 | 0.58 | 93.0 | 6.1 |
-| 0.85 | 2 | 7 | 1.1% | 53.75 | 1.70 | 0.41 | 131.6 | 4.2 |
-| 0.95 | 2 | 4 | 0.9% | 53.75 | 1.70 | 0.33 | 164.4 | 5.2 |
-| 0.55 | 6 | 39 | 10.2% | 53.44 | 9.52 | 2.94 | 18.2 | 3.2 |
-| 0.65 | 6 | 25 | 4.3% | 53.44 | 5.53 | 1.53 | 35.0 | 3.6 |
-| 0.75 | 6 | 21 | 3.5% | 53.44 | 3.54 | 1.20 | 44.5 | 2.9 |
-| 0.85 | 6 | 12 | 2.8% | 53.44 | 5.53 | 0.93 | 57.3 | 5.9 |
-| 0.95 | 6 | 7 | 1.6% | 53.44 | 1.72 | 0.57 | 94.1 | 3.0 |
+| 0.55 | 0.5 | 10 | 7.6% | 53.92 | 7.55 | 0.52 | 104.3 | 14.6 |
+| 0.65 | 0.5 | 1 | 0.6% | 53.92 | 3.51 | 0.04 | 1218.6 | 79.3 |
+| 0.75 | 0.5 | 1 | 0.2% | 53.92 | 0.45 | 0.02 | 3529.1 | 29.2 |
+| 0.85 | 0.5 | 1 | 0.1% | 53.92 | 0.06 | 0.01 | 4852.5 | 5.1 |
+| 0.95 | 0.5 | 1 | 0.1% | 53.92 | 7.55 | 0.01 | 4313.3 | 604.2 |
+| 0.55 | 2 | 20 | 8.3% | 53.75 | 9.55 | 0.56 | 95.6 | 17.0 |
+| 0.65 | 2 | 12 | 2.0% | 53.75 | 5.53 | 0.14 | 391.4 | 40.3 |
+| 0.75 | 2 | 10 | 1.7% | 53.75 | 3.52 | 0.12 | 447.0 | 29.3 |
+| 0.85 | 2 | 7 | 1.1% | 53.75 | 1.70 | 0.08 | 692.8 | 22.0 |
+| 0.95 | 2 | 4 | 0.9% | 53.75 | 1.70 | 0.06 | 915.1 | 29.0 |
+| 0.55 | 6 | 39 | 10.2% | 53.44 | 9.52 | 0.66 | 81.0 | 14.4 |
+| 0.65 | 6 | 25 | 4.3% | 53.44 | 5.53 | 0.29 | 182.2 | 18.9 |
+| 0.75 | 6 | 21 | 3.5% | 53.44 | 3.54 | 0.25 | 212.6 | 14.1 |
+| 0.85 | 6 | 12 | 2.8% | 53.44 | 5.53 | 0.19 | 286.2 | 29.6 |
+| 0.95 | 6 | 7 | 1.6% | 53.44 | 1.72 | 0.10 | 543.0 | 17.4 |
 
 ## H3: single-core throughput (MB/s of raw float64 input, best of 5)
 
-| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (fixed) | decode (fixed) | encode (lossless) | end-to-end `compress` |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| cpu | 40320 | 29 | 51 | 46 | 2535 | 65 | 3370 | 366 | 5 |
-| requests | 40320 | 42 | 63 | 68 | 2068 | 112 | 3054 | 439 | 9 |
+| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (fixed) | decode (fixed) | encode (lossless) | end-to-end `compress` | `compress`, no scale search |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| cpu | 40320 | 18 | 46 | 30 | 3038 | 40 | 3592 | 388 | 4 | 14 |
+| requests | 40320 | 35 | 72 | 32 | 2373 | 46 | 3557 | 478 | 6 | 20 |
 
 ## H4: independently decodable chunks (7 days)
 
@@ -297,26 +274,26 @@ is planned and verified on the whole series; `compress` asserts zero changed dec
 
 | dataset | chunk | lossless | uniform-tuned | rule-aware | ×lossless | ×tuned | repairs |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| cpu | 120 | 57.99 | 3.14 | 0.58 | 100.4 | 5.4 | 0 |
-| cpu | 480 | 55.11 | 2.74 | 0.39 | 142.2 | 7.1 | 0 |
-| cpu | 1920 | 54.29 | 2.60 | 0.32 | 170.0 | 8.1 | 0 |
-| cpu | whole | 53.96 | 2.55 | 0.30 | 179.3 | 8.5 | 0 |
-| latency | 120 | 58.87 | 5.92 | 0.53 | 111.1 | 11.2 | 0 |
-| latency | 480 | 56.25 | 5.44 | 0.35 | 158.9 | 15.4 | 0 |
-| latency | 1920 | 55.53 | 5.26 | 0.27 | 208.6 | 19.8 | 0 |
-| latency | whole | 55.24 | 5.20 | 0.22 | 255.6 | 24.1 | 0 |
-| memory | 120 | 56.85 | 7.73 | 0.99 | 57.5 | 7.8 | 0 |
-| memory | 480 | 51.68 | 7.21 | 0.77 | 66.8 | 9.3 | 0 |
-| memory | 1920 | 50.32 | 7.01 | 0.71 | 70.9 | 9.9 | 0 |
-| memory | whole | 49.91 | 6.93 | 0.70 | 71.3 | 9.9 | 0 |
-| requests | 120 | 27.02 | 3.13 | 1.03 | 26.4 | 3.1 | 0 |
-| requests | 480 | 21.22 | 2.46 | 0.65 | 32.6 | 3.8 | 0 |
-| requests | 1920 | 19.97 | 2.26 | 0.53 | 37.8 | 4.3 | 0 |
-| requests | whole | 19.68 | 2.17 | 0.48 | 40.6 | 4.5 | 0 |
-| requests-gappy | 120 | 28.68 | 10.72 | 5.23 | 5.5 | 2.1 | 0 |
-| requests-gappy | 480 | 23.51 | 9.87 | 4.78 | 4.9 | 2.1 | 0 |
-| requests-gappy | 1920 | 22.12 | 9.58 | 4.70 | 4.7 | 2.0 | 0 |
-| requests-gappy | whole | 21.76 | 9.47 | 4.68 | 4.7 | 2.0 | 0 |
+| cpu | 120 | 57.99 | 3.14 | 0.30 | 194.5 | 10.5 | 0 |
+| cpu | 480 | 55.11 | 2.74 | 0.16 | 354.7 | 17.6 | 0 |
+| cpu | 1920 | 54.29 | 2.60 | 0.09 | 581.0 | 27.8 | 0 |
+| cpu | whole | 53.96 | 2.55 | 0.07 | 739.0 | 34.9 | 0 |
+| latency | 120 | 58.87 | 3.42 | 0.29 | 203.2 | 11.8 | 0 |
+| latency | 480 | 56.25 | 3.01 | 0.18 | 316.8 | 17.0 | 0 |
+| latency | 1920 | 55.53 | 2.86 | 0.11 | 511.7 | 26.4 | 0 |
+| latency | whole | 55.24 | 2.81 | 0.08 | 710.2 | 36.2 | 0 |
+| memory | 120 | 56.85 | 7.71 | 0.48 | 117.8 | 16.0 | 0 |
+| memory | 480 | 51.68 | 7.19 | 0.30 | 170.2 | 23.7 | 0 |
+| memory | 1920 | 50.32 | 6.99 | 0.23 | 216.4 | 30.1 | 0 |
+| memory | whole | 49.91 | 6.92 | 0.21 | 236.4 | 32.8 | 0 |
+| requests | 120 | 27.02 | 1.61 | 0.97 | 27.9 | 1.7 | 0 |
+| requests | 480 | 21.22 | 1.05 | 0.61 | 34.9 | 1.7 | 0 |
+| requests | 1920 | 19.97 | 0.88 | 0.50 | 40.1 | 1.8 | 0 |
+| requests | whole | 19.68 | 0.81 | 0.47 | 42.3 | 1.7 | 0 |
+| requests-gappy | 120 | 28.68 | 10.69 | 3.64 | 7.9 | 2.9 | 0 |
+| requests-gappy | 480 | 23.51 | 9.85 | 3.18 | 7.4 | 3.1 | 0 |
+| requests-gappy | 1920 | 22.12 | 9.57 | 3.01 | 7.3 | 3.2 | 0 |
+| requests-gappy | whole | 21.76 | 9.46 | 2.92 | 7.5 | 3.2 | 0 |
 
 ## H5: signal fidelity (7 days, 120-sample chunks)
 
@@ -328,29 +305,29 @@ budget at ε on top of the rule budget (`Options::max_error`) and keeps every de
 |---|---|---:|---:|---:|---:|
 | cpu | uniform ε = 1.6e-2 | 3.14 | 4.6e-3 | 8.0e-3 | 0 |
 | cpu | uniform ε = 1.0e-3 | 6.29 | 5.8e-4 | 9.9e-4 | 0 |
-| cpu | rule-aware | 0.58 | 1.7e-1 | 4.5e-1 | 0 |
-| cpu | rule-aware ≤ 1.6e-2 | 3.28 | 4.5e-3 | 8.0e-3 | 0 |
-| cpu | rule-aware ≤ 1.0e-3 | 6.35 | 5.7e-4 | 9.9e-4 | 0 |
-| latency | uniform ε = 9.8e-4 | 5.92 | 2.9e-4 | 5.0e-4 | 0 |
+| cpu | rule-aware | 0.30 | 3.9e-1 | 3.5e0 | 0 |
+| cpu | rule-aware ≤ 1.6e-2 | 2.71 | 8.4e-3 | 1.6e-2 | 0 |
+| cpu | rule-aware ≤ 1.0e-3 | 6.31 | 5.7e-4 | 1.0e-3 | 0 |
+| latency | uniform ε = 3.9e-3 | 3.42 | 2.1e-3 | 3.9e-3 | 0 |
 | latency | uniform ε = 1.0e-3 | 4.89 | 5.7e-4 | 9.9e-4 | 0 |
-| latency | rule-aware | 0.53 | 6.5e-2 | 1.3e-1 | 0 |
-| latency | rule-aware ≤ 9.8e-4 | 5.94 | 2.9e-4 | 5.0e-4 | 0 |
-| latency | rule-aware ≤ 1.0e-3 | 4.92 | 5.7e-4 | 9.9e-4 | 0 |
-| memory | uniform ε = 2.4e-4 | 7.73 | 9.6e-5 | 1.7e-4 | 0 |
+| latency | rule-aware | 0.29 | 6.9e-2 | 6.8e-1 | 0 |
+| latency | rule-aware ≤ 3.9e-3 | 3.44 | 2.1e-3 | 3.9e-3 | 0 |
+| latency | rule-aware ≤ 1.0e-3 | 4.90 | 5.7e-4 | 1.0e-3 | 0 |
+| memory | uniform ε = 2.4e-4 | 7.71 | 1.1e-4 | 2.4e-4 | 3 |
 | memory | uniform ε = 1.0e-3 | 5.71 | 3.9e-4 | 6.7e-4 | 17 |
-| memory | rule-aware | 0.99 | 8.3e-2 | 2.6e-1 | 0 |
-| memory | rule-aware ≤ 2.4e-4 | 7.82 | 9.5e-5 | 1.7e-4 | 0 |
-| memory | rule-aware ≤ 1.0e-3 | 5.86 | 3.8e-4 | 6.7e-4 | 0 |
-| requests | uniform ε = 3.8e-6 | 3.13 | 1.5e-6 | 2.6e-6 | 0 |
+| memory | rule-aware | 0.48 | 8.4e-1 | 1.3e0 | 0 |
+| memory | rule-aware ≤ 2.4e-4 | 7.76 | 1.1e-4 | 2.4e-4 | 0 |
+| memory | rule-aware ≤ 1.0e-3 | 5.74 | 4.9e-4 | 1.0e-3 | 0 |
+| requests | uniform ε = 1.5e-5 | 1.61 | 8.6e-6 | 1.5e-5 | 1 |
 | requests | uniform ε = 1.0e-3 | 0.93 | 3.1e-4 | 6.8e-4 | 1020 |
-| requests | rule-aware | 1.03 | 4.8e-4 | 1.4e-3 | 0 |
-| requests | rule-aware ≤ 3.8e-6 | 3.13 | 1.5e-6 | 2.6e-6 | 0 |
-| requests | rule-aware ≤ 1.0e-3 | 1.04 | 2.2e-4 | 6.8e-4 | 0 |
-| requests-gappy | uniform ε = 6.0e-8 | 10.72 | 2.1e-8 | 3.4e-8 | 0 |
+| requests | rule-aware | 0.97 | 6.4e-4 | 1.8e-3 | 0 |
+| requests | rule-aware ≤ 1.5e-5 | 1.61 | 8.6e-6 | 1.5e-5 | 0 |
+| requests | rule-aware ≤ 1.0e-3 | 1.00 | 3.4e-4 | 1.0e-3 | 0 |
+| requests-gappy | uniform ε = 6.0e-8 | 10.69 | 2.8e-8 | 5.7e-8 | 0 |
 | requests-gappy | uniform ε = 1.0e-3 | 1.18 | 4.2e-4 | 7.5e-4 | 10655 |
-| requests-gappy | rule-aware | 5.23 | 2.8e-5 | 3.7e-4 | 0 |
-| requests-gappy | rule-aware ≤ 6.0e-8 | 10.72 | 2.1e-8 | 3.4e-8 | 0 |
-| requests-gappy | rule-aware ≤ 1.0e-3 | 5.23 | 2.8e-5 | 3.7e-4 | 0 |
+| requests-gappy | rule-aware | 3.64 | 6.9e-5 | 7.5e-4 | 0 |
+| requests-gappy | rule-aware ≤ 6.0e-8 | 10.70 | 2.8e-8 | 5.7e-8 | 0 |
+| requests-gappy | rule-aware ≤ 1.0e-3 | 3.64 | 6.9e-5 | 7.5e-4 | 0 |
 
 ## H6: Compression Safeguards baseline (7 days)
 
@@ -367,11 +344,11 @@ Mismatches are counted by the reference evaluator of this repository.
 
 | dataset | lossless (ours) | uniform-tuned (ours) | rule-aware (ours) | rule-aware κ=1024 (ours) | SZ3 tuned | SZ3+SG best | SZ3+SG ε / range | SZ3+SG points with mismatches | SZ3+SG encode, s (mean) | ×SZ3+SG |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| cpu | 53.96 | 2.55 | 0.30 | 0.11 | 3.72 | 0.16 | 1.0e0 | 0/13 | 1.9 | 1.5 |
-| latency | 55.24 | 5.20 | 0.22 | 0.11 | 4.65 | 0.20 | 1.0e0 | 0/13 | 1.2 | 1.8 |
-| memory | 49.91 | 6.93 | 0.70 | 0.39 | 9.11 | 0.57 | 1.0e0 | 0/13 | 24.8 | 1.5 |
-| requests | 19.68 | 2.17 | 0.48 | 0.48 | 2.65 | 0.69 | 6.1e-5 | 0/13 | 3.9 | 1.4 |
-| requests-gappy | 21.76 | 9.47 | 4.68 | 3.48 | 11.23 | 8.45 | 2.4e-7 | 11/13 | 19.2 | 2.4 |
+| cpu | 53.96 | 2.55 | 0.07 | 0.05 | 3.72 | 0.16 | 1.0e0 | 0/13 | 2.0 | 3.3 |
+| latency | 55.24 | 2.81 | 0.08 | 0.07 | 4.65 | 0.20 | 1.0e0 | 0/13 | 1.2 | 2.9 |
+| memory | 49.91 | 6.92 | 0.21 | 0.14 | 9.11 | 0.57 | 1.0e0 | 0/13 | 24.3 | 4.1 |
+| requests | 19.68 | 0.81 | 0.47 | 0.46 | 2.65 | 0.69 | 6.1e-5 | 0/13 | 3.9 | 1.5 |
+| requests-gappy | 21.76 | 9.46 | 2.92 | 2.72 | 11.23 | 8.45 | 2.4e-7 | 11/13 | 18.5 | 3.1 |
 
 Values are bits per value (timestamps excluded). `×SZ3+SG` = SZ3+SG best / rule-aware κ=1024.
 
@@ -382,16 +359,16 @@ Values are bits per value (timestamps excluded). `×SZ3+SG` = SZ3+SG best / rule
 | 6.0e-8 | 59.93 | 0 | 59.93 | 0 | 0.0 |
 | 2.4e-7 | 59.93 | 0 | 59.93 | 0 | 0.0 |
 | 9.5e-7 | 59.93 | 0 | 59.93 | 0 | 0.0 |
-| 3.8e-6 | 59.93 | 0 | 59.93 | 0 | 0.0 |
+| 3.8e-6 | 59.93 | 0 | 59.93 | 0 | 0.1 |
 | 1.5e-5 | 20.05 | 0 | 20.05 | 0 | 0.0 |
-| 6.1e-5 | 14.93 | 0 | 14.94 | 0 | 0.0 |
-| 2.4e-4 | 8.93 | 0 | 8.96 | 0 | 3.4 |
+| 6.1e-5 | 14.93 | 0 | 14.94 | 0 | 0.1 |
+| 2.4e-4 | 8.93 | 0 | 8.96 | 0 | 5.6 |
 | 9.8e-4 | 6.19 | 0 | 6.23 | 0 | 3.7 |
-| 3.9e-3 | 3.72 | 0 | 3.79 | 0 | 3.4 |
-| 1.6e-2 | 1.94 | 9 | 2.06 | 0 | 3.5 |
-| 6.2e-2 | 0.67 | 20 | 0.83 | 0 | 3.4 |
-| 2.5e-1 | 0.32 | 368 | 0.48 | 0 | 3.6 |
-| 1.0e0 | 0.03 | 178 | 0.16 | 0 | 3.6 |
+| 3.9e-3 | 3.72 | 0 | 3.79 | 0 | 3.3 |
+| 1.6e-2 | 1.94 | 9 | 2.06 | 0 | 3.3 |
+| 6.2e-2 | 0.67 | 20 | 0.83 | 0 | 3.1 |
+| 2.5e-1 | 0.32 | 368 | 0.48 | 0 | 3.7 |
+| 1.0e0 | 0.03 | 178 | 0.16 | 0 | 3.5 |
 
 </details>
 
@@ -407,10 +384,10 @@ Values are bits per value (timestamps excluded). `×SZ3+SG` = SZ3+SG best / rule
 | 6.1e-5 | 10.18 | 0 | 10.18 | 0 | 0.0 |
 | 2.4e-4 | 7.10 | 0 | 7.10 | 0 | 0.0 |
 | 9.8e-4 | 4.65 | 0 | 4.65 | 0 | 0.0 |
-| 3.9e-3 | 2.52 | 1 | 2.59 | 0 | 3.0 |
-| 1.6e-2 | 0.94 | 4 | 1.06 | 0 | 3.1 |
-| 6.2e-2 | 0.25 | 16 | 0.45 | 0 | 3.3 |
-| 2.5e-1 | 0.07 | 120 | 0.34 | 0 | 3.0 |
+| 3.9e-3 | 2.52 | 1 | 2.59 | 0 | 2.9 |
+| 1.6e-2 | 0.94 | 4 | 1.06 | 0 | 2.8 |
+| 6.2e-2 | 0.25 | 16 | 0.45 | 0 | 3.4 |
+| 2.5e-1 | 0.07 | 120 | 0.34 | 0 | 2.9 |
 | 1.0e0 | 0.03 | 257 | 0.20 | 0 | 2.9 |
 
 </details>
@@ -421,17 +398,17 @@ Values are bits per value (timestamps excluded). `×SZ3+SG` = SZ3+SG best / rule
 |---:|---:|---:|---:|---:|---:|
 | 6.0e-8 | 59.40 | 0 | 59.40 | 0 | 1.0 |
 | 2.4e-7 | 59.40 | 0 | 59.40 | 0 | 1.0 |
-| 9.5e-7 | 59.40 | 0 | 59.40 | 0 | 1.0 |
-| 3.8e-6 | 23.11 | 0 | 23.11 | 0 | 0.9 |
-| 1.5e-5 | 13.03 | 0 | 13.03 | 0 | 1.1 |
-| 6.1e-5 | 9.11 | 0 | 9.11 | 0 | 1.0 |
-| 2.4e-4 | 6.51 | 12 | 6.62 | 0 | 53.1 |
-| 9.8e-4 | 4.28 | 14 | 4.47 | 0 | 45.6 |
-| 3.9e-3 | 2.28 | 55 | 2.70 | 0 | 45.7 |
-| 1.6e-2 | 0.72 | 279 | 1.62 | 0 | 45.4 |
-| 6.2e-2 | 0.26 | 845 | 0.81 | 0 | 45.1 |
-| 2.5e-1 | 0.13 | 4284 | 0.58 | 0 | 40.8 |
-| 1.0e0 | 0.06 | 12856 | 0.57 | 0 | 40.7 |
+| 9.5e-7 | 59.40 | 0 | 59.40 | 0 | 0.9 |
+| 3.8e-6 | 23.11 | 0 | 23.11 | 0 | 1.0 |
+| 1.5e-5 | 13.03 | 0 | 13.03 | 0 | 0.9 |
+| 6.1e-5 | 9.11 | 0 | 9.11 | 0 | 0.8 |
+| 2.4e-4 | 6.51 | 12 | 6.62 | 0 | 52.6 |
+| 9.8e-4 | 4.28 | 14 | 4.47 | 0 | 45.0 |
+| 3.9e-3 | 2.28 | 55 | 2.70 | 0 | 44.4 |
+| 1.6e-2 | 0.72 | 279 | 1.62 | 0 | 44.4 |
+| 6.2e-2 | 0.26 | 845 | 0.81 | 0 | 44.0 |
+| 2.5e-1 | 0.13 | 4284 | 0.58 | 0 | 40.1 |
+| 1.0e0 | 0.06 | 12856 | 0.57 | 0 | 40.1 |
 
 </details>
 
@@ -440,18 +417,18 @@ Values are bits per value (timestamps excluded). `×SZ3+SG` = SZ3+SG best / rule
 | ε / range | SZ3 bits/value | SZ3 mismatches | SZ3+SG bits/value | SZ3+SG mismatches | SZ3+SG encode, s |
 |---:|---:|---:|---:|---:|---:|
 | 6.0e-8 | 7.03 | 0 | 7.03 | 0 | 0.0 |
-| 2.4e-7 | 4.75 | 0 | 4.77 | 0 | 4.0 |
-| 9.5e-7 | 2.65 | 0 | 2.67 | 0 | 4.9 |
-| 3.8e-6 | 1.23 | 29 | 1.27 | 0 | 4.8 |
-| 1.5e-5 | 0.58 | 145 | 0.69 | 0 | 4.3 |
-| 6.1e-5 | 0.42 | 21 | 0.69 | 0 | 5.1 |
-| 2.4e-4 | 0.26 | 140 | 0.90 | 0 | 4.0 |
-| 9.8e-4 | 0.18 | 201 | 1.00 | 0 | 4.1 |
-| 3.9e-3 | 0.09 | 215 | 1.15 | 0 | 4.4 |
-| 1.6e-2 | 0.09 | 300 | 1.31 | 0 | 3.7 |
-| 6.2e-2 | 0.05 | 20189 | 0.92 | 0 | 4.4 |
-| 2.5e-1 | 0.04 | 20189 | 0.87 | 0 | 3.6 |
-| 1.0e0 | 0.03 | 20189 | 0.85 | 0 | 3.2 |
+| 2.4e-7 | 4.75 | 0 | 4.77 | 0 | 5.6 |
+| 9.5e-7 | 2.65 | 0 | 2.67 | 0 | 4.8 |
+| 3.8e-6 | 1.23 | 29 | 1.27 | 0 | 4.5 |
+| 1.5e-5 | 0.58 | 145 | 0.69 | 0 | 3.8 |
+| 6.1e-5 | 0.42 | 21 | 0.69 | 0 | 5.2 |
+| 2.4e-4 | 0.26 | 140 | 0.90 | 0 | 4.3 |
+| 9.8e-4 | 0.18 | 201 | 1.00 | 0 | 4.0 |
+| 3.9e-3 | 0.09 | 215 | 1.15 | 0 | 4.5 |
+| 1.6e-2 | 0.09 | 300 | 1.31 | 0 | 2.9 |
+| 6.2e-2 | 0.05 | 20189 | 0.92 | 0 | 4.3 |
+| 2.5e-1 | 0.04 | 20189 | 0.87 | 0 | 3.9 |
+| 1.0e0 | 0.03 | 20189 | 0.85 | 0 | 3.0 |
 
 </details>
 
@@ -459,19 +436,19 @@ Values are bits per value (timestamps excluded). `×SZ3+SG` = SZ3+SG best / rule
 
 | ε / range | SZ3 bits/value | SZ3 mismatches | SZ3+SG bits/value | SZ3+SG mismatches | SZ3+SG encode, s |
 |---:|---:|---:|---:|---:|---:|
-| 6.0e-8 | 11.23 | 0 | 11.64 | 0 | 27.5 |
-| 2.4e-7 | 7.58 | 6 | 8.45 | 0 | 23.0 |
-| 9.5e-7 | 4.83 | 23 | 6.53 | 4 | 17.0 |
-| 3.8e-6 | 3.03 | 200 | 6.89 | 61 | 19.3 |
-| 1.5e-5 | 2.75 | 746 | 9.30 | 58 | 17.6 |
-| 6.1e-5 | 1.48 | 4599 | 10.59 | 67 | 18.0 |
-| 2.4e-4 | 0.47 | 8430 | 9.17 | 85 | 19.1 |
-| 9.8e-4 | 0.27 | 9908 | 8.66 | 35 | 17.0 |
-| 3.9e-3 | 0.21 | 11816 | 8.90 | 64 | 19.1 |
-| 1.6e-2 | 0.12 | 12412 | 8.44 | 79 | 18.0 |
-| 6.2e-2 | 0.07 | 26808 | 8.23 | 63 | 17.4 |
-| 2.5e-1 | 0.05 | 26728 | 8.11 | 60 | 19.5 |
-| 1.0e0 | 0.03 | 26793 | 8.05 | 47 | 16.9 |
+| 6.0e-8 | 11.23 | 0 | 11.64 | 0 | 26.2 |
+| 2.4e-7 | 7.58 | 6 | 8.45 | 0 | 23.3 |
+| 9.5e-7 | 4.83 | 23 | 6.53 | 4 | 16.5 |
+| 3.8e-6 | 3.03 | 200 | 6.89 | 61 | 18.0 |
+| 1.5e-5 | 2.75 | 746 | 9.30 | 58 | 17.7 |
+| 6.1e-5 | 1.48 | 4599 | 10.59 | 67 | 16.3 |
+| 2.4e-4 | 0.47 | 8430 | 9.17 | 85 | 18.4 |
+| 9.8e-4 | 0.27 | 9908 | 8.66 | 35 | 16.5 |
+| 3.9e-3 | 0.21 | 11816 | 8.90 | 64 | 17.3 |
+| 1.6e-2 | 0.12 | 12412 | 8.44 | 79 | 17.8 |
+| 6.2e-2 | 0.07 | 26808 | 8.23 | 63 | 16.1 |
+| 2.5e-1 | 0.05 | 26728 | 8.11 | 60 | 18.7 |
+| 1.0e0 | 0.03 | 26793 | 8.05 | 47 | 17.2 |
 
 </details>
 
@@ -481,23 +458,22 @@ Bits per value with the analytic budget scaled by κ, then repaired: on every fl
 budget on its support is halved, never below the analytic one, and zeroed if already there. In
 parentheses: repair rounds (one encode + verify each). Zero changed decisions everywhere (asserted).
 
-
 whole series:
 
 | dataset | κ=1 (analytic) | κ=2 | κ=4 | κ=16 | κ=64 | κ=1024 |
 |---|---:|---:|---:|---:|---:|---:|
-| cpu | 0.30 (0) | 0.23 (0) | 0.18 (0) | 0.14 (3) | 0.14 (10) | 0.11 (11) |
-| latency | 0.22 (0) | 0.18 (1) | 0.15 (3) | 0.11 (4) | 0.09 (7) | 0.11 (15) |
-| memory | 0.70 (0) | 0.57 (2) | 0.50 (4) | 0.45 (10) | 0.43 (21) | 0.39 (23) |
-| requests | 0.48 (0) | 0.48 (0) | 0.48 (0) | 0.48 (0) | 0.48 (0) | 0.48 (0) |
-| requests-gappy | 4.68 (0) | 4.00 (4) | 3.69 (7) | 3.47 (10) | 3.48 (19) | 3.48 (22) |
+| cpu | 0.07 (0) | 0.06 (2) | 0.05 (2) | 0.05 (5) | 0.05 (7) | 0.05 (12) |
+| latency | 0.08 (0) | 0.07 (2) | 0.06 (4) | 0.06 (8) | 0.06 (12) | 0.07 (19) |
+| memory | 0.21 (0) | 0.18 (1) | 0.16 (2) | 0.14 (7) | 0.14 (11) | 0.14 (21) |
+| requests | 0.47 (0) | 0.46 (14) | 0.46 (15) | 0.46 (15) | 0.46 (18) | 0.46 (22) |
+| requests-gappy | 2.92 (0) | 2.80 (6) | 2.74 (10) | 2.75 (22) | 2.76 (30) | 2.72 (75) |
 
 chunks of 120:
 
 | dataset | κ=1 (analytic) | κ=2 | κ=4 | κ=16 | κ=64 | κ=1024 |
 |---|---:|---:|---:|---:|---:|---:|
-| cpu | 0.58 (0) | 0.48 (1) | 0.41 (1) | 0.39 (2) | 0.37 (5) | 0.33 (8) |
-| latency | 0.53 (0) | 0.37 (1) | 0.35 (3) | 0.38 (8) | 0.36 (12) | 0.36 (18) |
-| memory | 0.99 (0) | 0.87 (3) | 0.76 (5) | 0.65 (37) | 0.63 (15) | 0.61 (24) |
-| requests | 1.03 (0) | 0.98 (1) | 0.98 (3) | 0.97 (6) | 0.97 (8) | 0.97 (12) |
-| requests-gappy | 5.23 (0) | 4.53 (2) | 4.08 (4) | 3.64 (11) | 3.48 (15) | 3.45 (19) |
+| cpu | 0.30 (0) | 0.29 (1) | 0.28 (3) | 0.28 (6) | 0.28 (9) | 0.28 (15) |
+| latency | 0.29 (0) | 0.28 (3) | 0.27 (5) | 0.27 (8) | 0.27 (12) | 0.27 (18) |
+| memory | 0.48 (0) | 0.45 (2) | 0.43 (4) | 0.41 (8) | 0.41 (10) | 0.41 (18) |
+| requests | 0.97 (0) | 0.96 (14) | 0.96 (13) | 0.96 (15) | 0.96 (17) | 0.96 (25) |
+| requests-gappy | 3.64 (0) | 3.42 (4) | 3.37 (6) | 3.34 (15) | 3.34 (27) | 3.32 (51) |

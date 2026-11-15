@@ -54,6 +54,12 @@ pub struct Options {
     /// powers of two, and on discrete data a finer step can be cheaper), so
     /// the encoder tries a few. `&[1.0]` disables the search.
     pub scales: &'static [f64],
+    /// Step choice of the quantizer ([`Steps::Adaptive`] by default).
+    pub steps: Steps,
+    /// Use the per-direction tolerances of the plan (Corollary 1). `false`
+    /// codes the symmetric box `min(down, up)` of Theorem 1 instead; kept
+    /// for the ablation.
+    pub one_sided: bool,
 }
 
 /// Default [`Options::scales`].
@@ -66,6 +72,8 @@ impl Default for Options {
             max_error: f64::INFINITY,
             slack: 1.0,
             scales: SCALES,
+            steps: Steps::Adaptive,
+            one_sided: true,
         }
     }
 }
@@ -115,6 +123,11 @@ pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Option
         "scales must lie in (0, 1]"
     );
     let mut plan = budget::plan(series, rules, grid);
+    if !opts.one_sided {
+        let b = plan.budget();
+        plan.down = b.clone();
+        plan.up = b;
+    }
     for b in plan.down.iter_mut().chain(plan.up.iter_mut()) {
         // Written so that a NaN budget (exact sample) stays NaN.
         if *b > opts.max_error {
@@ -154,6 +167,7 @@ pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Option
             start.clone(),
             &start,
             opts.chunk,
+            opts.steps,
         ));
     }
     if opts.slack > 1.0 || opts.scales.is_empty() {
@@ -165,6 +179,7 @@ pub fn compress_with(series: &Series, rules: &[Rule], grid: &[i64], opts: Option
             scaled(opts.slack),
             &plan,
             opts.chunk,
+            opts.steps,
         ));
     }
     best.unwrap()
@@ -181,10 +196,12 @@ fn repair(
     mut plan: Plan,
     floor: &Plan,
     chunk: usize,
+    steps: Steps,
 ) -> Compressed {
     let (mut repairs, mut rounds) = (0, 0);
     loop {
-        let chunks = encode_chunked(&series.vals, &plan.down, &plan.up, plan.mode, chunk);
+        let chunks =
+            encode_chunked_steps(&series.vals, &plan.down, &plan.up, plan.mode, chunk, steps);
         let c = Compressed {
             chunks,
             plan,
@@ -237,11 +254,23 @@ pub fn encode_chunked(
     mode: Mode,
     chunk: usize,
 ) -> Vec<Encoded> {
+    encode_chunked_steps(vals, down, up, mode, chunk, Steps::Adaptive)
+}
+
+/// [`encode_chunked`] with a choice of [`Steps`].
+pub fn encode_chunked_steps(
+    vals: &[f64],
+    down: &[f64],
+    up: &[f64],
+    mode: Mode,
+    chunk: usize,
+    steps: Steps,
+) -> Vec<Encoded> {
     let mut floor = f64::NEG_INFINITY;
     vals.chunks(chunk)
         .zip(down.chunks(chunk).zip(up.chunks(chunk)))
         .map(|(xs, (down, up))| {
-            let e = encode_bounds(xs, down, up, mode, Coding::Entropy, floor);
+            let e = encode_steps(xs, down, up, mode, Coding::Entropy, floor, steps);
             floor = e.last;
             e
         })

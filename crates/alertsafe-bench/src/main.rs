@@ -8,8 +8,10 @@
 //!
 //! Usage: `alertsafe-bench [h1|h2|h3|h4|h5|h7|all] [days]`,
 //! `alertsafe-bench [export|h6] DIR [days]`, `alertsafe-bench h8 DATA`,
-//! `alertsafe-bench [export|h6] DIR --real DATA`
+//! `alertsafe-bench [export|h6] DIR --real DATA`,
+//! `alertsafe-bench ablation [days] [--real DATA] [--jobs N]`
 
+mod ablation;
 mod gen;
 mod real;
 mod relax;
@@ -18,8 +20,8 @@ mod safeguards;
 use std::time::Instant;
 
 use alertsafe_codec::{
-    alert_diff, budget, compress, compress_with, decode, encode, encode_bounds, encode_chunked,
-    encode_steps, Coding, Encoded, Mode, Options, Steps,
+    alert_diff, budget, compress, compress_with, decode, encode, encode_bounds,
+    encode_chunked_steps, encode_steps, Coding, Encoded, Mode, Options, Steps,
 };
 use alertsafe_rules::{grid, Rule, Series};
 use gen::Dataset;
@@ -50,6 +52,8 @@ fn value_range(s: &Series) -> f64 {
 
 struct Sweep {
     eps: f64,
+    /// Step choice that gave this point (the smaller safe one of the two).
+    steps: Steps,
     bits_per_value: f64,
     mismatches: usize,
     changed: usize,
@@ -88,6 +92,7 @@ fn uniform_sweep(s: &Series, rules: &[Rule], g: &[i64], mode: Mode) -> Vec<Sweep
                     let d = alert_diff(s, &recon, rules, g);
                     Sweep {
                         eps,
+                        steps,
                         bits_per_value: enc.bits_per_value(),
                         mismatches: d.state_mismatches,
                         changed: d.changed_firings(),
@@ -309,8 +314,8 @@ fn best_of<T>(runs: usize, mut f: impl FnMut() -> T) -> (f64, T) {
 
 fn h3(days: f64) {
     println!("\n## H3: single-core throughput (MB/s of raw float64 input, best of 5)\n");
-    println!("| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (fixed) | decode (fixed) | encode (lossless) | end-to-end `compress` |");
-    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    println!("| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (fixed) | decode (fixed) | encode (lossless) | end-to-end `compress` | `compress`, no scale search |");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for ds in [gen::cpu(1, days, 0.8, 1.5), gen::requests(4, days)] {
         let s = &ds.series;
         let g = eval_grid(s);
@@ -342,8 +347,13 @@ fn h3(days: f64) {
         let zeros = vec![0.0; s.len()];
         let (t_ll, _) = best_of(5, || encode(&s.vals, &zeros, plan.mode));
         let (t_all, _) = best_of(5, || compress(s, &ds.rules, &g));
+        let one = Options {
+            scales: &[1.0],
+            ..Default::default()
+        };
+        let (t_one, _) = best_of(5, || compress_with(s, &ds.rules, &g, one));
         println!(
-            "| {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |",
+            "| {} | {} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |",
             ds.name,
             s.len(),
             mb / t_naive,
@@ -353,7 +363,8 @@ fn h3(days: f64) {
             mb / t_enc_fx,
             mb / t_dec_fx,
             mb / t_ll,
-            mb / t_all
+            mb / t_all,
+            mb / t_one
         );
     }
 }
@@ -372,8 +383,14 @@ fn datasets(days: f64) -> [Dataset; 5] {
 const PROM_CHUNK: usize = 120;
 
 /// Bits per value of `vals` coded as independent streams of `chunk` samples.
-fn chunked_bits_per_value(vals: &[f64], budget: &[f64], mode: Mode, chunk: usize) -> f64 {
-    let bits: usize = encode_chunked(vals, budget, budget, mode, chunk)
+fn chunked_bits_per_value(
+    vals: &[f64],
+    budget: &[f64],
+    mode: Mode,
+    chunk: usize,
+    steps: Steps,
+) -> f64 {
+    let bits: usize = encode_chunked_steps(vals, budget, budget, mode, chunk, steps)
         .iter()
         .map(|e| e.bits)
         .sum();
@@ -392,7 +409,8 @@ fn h4(days: f64) {
         let s = &ds.series;
         let g = eval_grid(s);
         let mode = budget::plan(s, &ds.rules, &g).mode;
-        let eps_tuned = tuned(&uniform_sweep(s, &ds.rules, &g, mode)).eps;
+        let sweep = uniform_sweep(s, &ds.rules, &g, mode);
+        let (eps_tuned, steps_tuned) = (tuned(&sweep).eps, tuned(&sweep).steps);
         for chunk in [PROM_CHUNK, 4 * PROM_CHUNK, 16 * PROM_CHUNK, usize::MAX] {
             let c = compress_with(
                 s,
@@ -405,8 +423,15 @@ fn h4(days: f64) {
             );
             let recon = s.with_values(c.decode());
             assert_eq!(alert_diff(s, &recon, &ds.rules, &g).state_mismatches, 0);
-            let lossless = chunked_bits_per_value(&s.vals, &vec![0.0; s.len()], mode, chunk);
-            let tuned = chunked_bits_per_value(&s.vals, &vec![eps_tuned; s.len()], mode, chunk);
+            let lossless =
+                chunked_bits_per_value(&s.vals, &vec![0.0; s.len()], mode, chunk, Steps::Nearest);
+            let tuned = chunked_bits_per_value(
+                &s.vals,
+                &vec![eps_tuned; s.len()],
+                mode,
+                chunk,
+                steps_tuned,
+            );
             let aware = c.bits_per_value();
             let label = if chunk == usize::MAX {
                 "whole".to_string()
@@ -454,7 +479,8 @@ fn h5(days: f64) {
         let g = eval_grid(s);
         let range = value_range(s);
         let mode = budget::plan(s, &ds.rules, &g).mode;
-        let eps_tuned = tuned(&uniform_sweep(s, &ds.rules, &g, mode)).eps;
+        let sweep = uniform_sweep(s, &ds.rules, &g, mode);
+        let (eps_tuned, steps_tuned) = (tuned(&sweep).eps, tuned(&sweep).steps);
         let row = |name: String, bits: f64, recon: Vec<f64>| {
             let (rmse, max) = errors(&s.vals, &recon);
             let d = alert_diff(s, &s.with_values(recon), &ds.rules, &g);
@@ -467,13 +493,15 @@ fn h5(days: f64) {
             );
             d.state_mismatches
         };
-        for eps in [eps_tuned, 1e-3 * range] {
-            let enc = encode_chunked(
+        // A uniform bound with its tuned step choice; nearest (unbiased) at 1e-3.
+        for (eps, steps) in [(eps_tuned, steps_tuned), (1e-3 * range, Steps::Nearest)] {
+            let enc = encode_chunked_steps(
                 &s.vals,
                 &vec![eps; s.len()],
                 &vec![eps; s.len()],
                 mode,
                 PROM_CHUNK,
+                steps,
             );
             let bits: usize = enc.iter().map(|e| e.bits).sum();
             row(
@@ -508,6 +536,25 @@ fn main() {
             std::process::exit(2);
         };
         real::h8(std::path::Path::new(data));
+        return;
+    }
+    if what == "ablation" {
+        let flag = |f: &str| {
+            args.iter()
+                .position(|a| a == f)
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+        };
+        let days: f64 = args
+            .get(2)
+            .filter(|a| !a.starts_with("--"))
+            .and_then(|d| d.parse().ok())
+            .unwrap_or(7.0);
+        let jobs = flag("--jobs")
+            .and_then(|j| j.parse().ok())
+            .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()));
+        let real = flag("--real");
+        ablation::ablation(days, real.as_deref().map(std::path::Path::new), jobs);
         return;
     }
     if let "export" | "h6" = what {

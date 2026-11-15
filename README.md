@@ -137,44 +137,46 @@ bits per sample. H2 is a monotonicity statement in the margin distribution.
 ## Results so far (synthetic, 7 days at 15 s scrape)
 
 Bits per value, timestamps excluded. Every rule-aware row has zero changed
-decisions. Full tables, sweeps and caveats: [`docs/results.md`](docs/results.md).
+decisions. Full tables, sweeps and caveats: [`docs/results.md`](docs/results.md);
+component ablation: [`docs/ablation.md`](docs/ablation.md).
 
 | dataset | rules | lossless (Gorilla XOR) | uniform, guaranteed | uniform, tuned on data | **rule-aware** |
 |---|---|---:|---:|---:|---:|
-| cpu | `avg_over_time[5m] > 0.8 for 10m`, `max_over_time[1m] > 0.97 for 2m` | 53.96 | 11.57 | 2.55 | **0.30** |
-| latency | `avg_over_time[5m] > 0.5 for 5m`, `x > 1 for 2m keep_firing_for 5m` | 55.24 | 7.22 | 5.20 | **0.22** |
-| memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 49.91 | 12.96 | 6.93 | **0.70** |
-| requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 19.68 | 2.18 | 2.17 | **0.48** |
-| requests-gappy | `rate[5m] > 700 for 5m`, `rate[5m] < 600 for 10m`; 8% missed scrapes, rate hovering at θ | 21.76 | 11.47 | 9.47 | **4.68** |
+| cpu | `avg_over_time[5m] > 0.8 for 10m`, `max_over_time[1m] > 0.97 for 2m` | 53.96 | 11.57 | 2.55 | **0.07** |
+| latency | `avg_over_time[5m] > 0.5 for 5m`, `x > 1 for 2m keep_firing_for 5m` | 55.24 | 7.22 | 2.81 | **0.08** |
+| memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 49.91 | 12.96 | 6.92 | **0.21** |
+| requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 19.68 | 2.02 | 0.81 | **0.47** |
+| requests-gappy | `rate[5m] > 700 for 5m`, `rate[5m] < 600 for 10m`; 8% missed scrapes, rate hovering at θ | 21.76 | 11.46 | 9.46 | **2.92** |
 
-All columns share the entropy-coded format. The synthetic data support H1
-(4.5 to 24× over a uniform bound tuned on the data, 4.5 to 38× over the
-guaranteed one; only 2.0× and 2.4× on `requests-gappy`, where most
-evaluations are near θ) and H2 (the rate grows with time spent near thresholds).
-Entropy coding cut the rule-aware rate 3 to 6× against fixed-width codes
-(1.4 to 2.2 bits per value). In Prometheus-sized chunks of 120 samples
-the rule-aware rate rises to 0.53–1.03 bits per value, 3 to 11× below the
+All columns share the entropy-coded format. On the gauges the rule-aware
+codec is 33 to 36× below a uniform bound tuned on the data and 61 to 158×
+below the guaranteed one; on the counters 1.7× (`requests`) and 3.2×
+(`requests-gappy`) below the tuned bound. The rate grows with the time spent
+near thresholds (H2). In Prometheus-sized chunks of 120 samples the rate is
+0.29–0.97 bits per value (3.64 on `requests-gappy`), 1.7 to 16× below the
 tuned uniform bound under the same chunking. The reconstruction is only
-faithful near thresholds (RMSE up to 17% of the range on gauges). With a
-pointwise cap it costs within 5% of a uniform bound of the same size. At
-ε = 10⁻³ of the range the uniform bound changes decisions on two datasets,
-while the capped rule-aware codec keeps them for at most 0.15 extra bits per
-value. For H3, decode runs at about 2.0–2.5 GB/s and encode at 46 to 68
-MB/s per core. The $O(n)$ budget runs at about 50–60 MB/s and the full verified
-`compress` at 5 to 9 MB/s, because it encodes four scalings of the budget and
-keeps the smallest (`Options::scales`; it was 26 to 44 MB/s with one).
+faithful near thresholds; with a pointwise cap it costs within 2% of a
+uniform bound of the same size, while a uniform ε = 10⁻³ of the range
+changes decisions on three datasets. Decode runs at 2.4–3.0 GB/s and encode
+at 30–32 MB/s per core; the full verified `compress` at 4–6 MB/s, or 14–20
+MB/s without the (now redundant) budget-scale search.
+
+**Ablation.** From the Theorem 1 box budget with round-to-nearest to the
+full codec the size falls 2.3× (synthetic) and 2.4–2.5× (real), with the
+same stream format. The one-sided budget (Corollary 1) and the lazy step
+choice only work together: one-sided bounds with nearest rounding gain
+little. Fixed-width residual codes are 6–8.5× larger.
 
 **Against Compression Safeguards (H6, H7).** SZ3 wrapped in safeguards
-translated from the rules keeps every decision and beats the analytic
-budget on the gauges (0.16–0.57 vs 0.22–0.70 bits per value): the Theorem 1
-budget is a worst-case box, while the safeguards correct only the
-evaluations that actually change. An optimistic budget (κ = 1024 × the
-analytic one) with a posteriori repair on the flipped supports closes the
-gap on synthetic data: 0.11–0.48 bits per value, 1.4–1.8× below SZ3+SG, and 10–100× faster
-(`Options::slack`). On a counter with missed scrapes (`requests-gappy`) the
+translated from the rules keeps every decision on the four original
+datasets, but the analytic rule-aware budget alone is smaller on all five
+(0.07–0.47 vs 0.16–0.69 bits per value; it lost on the gauges before the
+one-sided budget). An optimistic budget (κ = 1024 × the analytic one) with
+a posteriori repair on the flipped supports (`Options::slack`) is 1.5–4.1×
+below SZ3+SG. On a counter with missed scrapes (`requests-gappy`) the
 safeguards' `rate` translation, which cannot express Prometheus'
 extrapolation, changes decisions at 11 of 13 sweep points; its smallest
-safe output is 8.45 bits per value against 4.68 (analytic) and 3.48
+safe output is 8.45 bits per value against 2.92 (analytic) and 2.72
 (optimistic).
 
 ## Results on real Prometheus data (H8)
@@ -216,14 +218,17 @@ irregular timestamps or phase robustness, and no PromQL `rate` or counter
 resets, and it enforces requirements by corrections rather than an analytic
 budget. It is a baseline (H6, `baselines/safeguards/run.py`); with the most
 favourable translation we found it preserves every decision on the
-synthetic data and beats the purely analytic budget, but not the
-optimistic budget with repair (H7). On real series it beats both (H8).
-What remains specific to this work is the exact `rate` analysis (gappy
-counters), phase robustness, speed, and the analytic budget as a sound
-starting point; the coder itself needs per-sample precision to compete.
+synthetic data except the gappy counter. With the box budget of Theorem 1
+it beat our analytic codec on gauges; with the one-sided budget and lazy
+steps the analytic codec is smaller on all synthetic datasets and the
+optimistic one on 19 of 26 real variants (H8). SG stays smaller on dense
+counters under `rate`, where our quantizer step is shared by a 128-sample
+block. What is specific to this work is the problem statement, the exact
+`rate` analysis (gappy counters), the one-sided budget, phase robustness,
+speed, and the analytic budget as a sound starting point and repair floor.
 
 The Lipschitz step itself is standard quantity-of-interest error propagation
-(Liu et al., PVLDB 2022). The contribution lies in the problem statement, the
+(Jiao et al., PVLDB 2022). The contribution lies in the problem statement, the
 temporal and PromQL-specific analysis, the applicability boundary, and the
 evaluation.
 
@@ -240,7 +245,8 @@ crates/
 scripts/
   fetch_real.py      raw samples + rules from the public Prometheus demo servers
 datasets/
-  prom-demo-2026-11-02.tar.xz  the 13 real series of H8 (7 days, fetched 2026-11-02)
+  prom-demo-2026-11-02.tar.xz      the 13 real series of H8 (7 days, fetched 2026-11-02)
+  prom-demo-2026-11-04-30d.tar.xz  the same series, 30 days (fetched 2026-11-04)
 baselines/
   safeguards/run.py  Compression Safeguards + SZ3 baseline for H6 (Python, uv)
 docs/
@@ -248,6 +254,8 @@ docs/
   related-work.md    novelty check and positioning
   results.md         benchmark output (synthetic)
   results-real.md    benchmark output (real Prometheus series, H8 and H6)
+  ablation.md        contribution of each codec component (synthetic + real)
+paper/               arXiv preprint draft (LaTeX: main.tex, sections/, refs.bib)
 ```
 
 ## Usage
@@ -258,6 +266,7 @@ cargo run --release -p alertsafe-bench -- all 7   # H1-H5, H7 on 7 synthetic day
 tar -C data -xJf datasets/prom-demo-2026-11-02.tar.xz   # real series of H8
 # or fetch a fresh week: scripts/fetch_real.py data/real 7 (stdlib Python)
 cargo run --release -p alertsafe-bench -- h8 data/real   # H1/H4/H7 on them
+cargo run --release -p alertsafe-bench -- ablation 7 --real data/real   # codec ablation
 # H6: Compression Safeguards baseline (needs uv)
 cargo run --release -p alertsafe-bench -- export /tmp/h6 7
 uv run baselines/safeguards/run.py /tmp/h6
@@ -275,7 +284,7 @@ let c = compress(&series, &rules, &eval);
 let restored = c.decode();   // same alert trajectories as `series`
 
 // Prometheus-sized chunks, plus a pointwise bound for dashboards.
-let opts = Options { chunk: 120, max_error: 0.01 };
+let opts = Options { chunk: 120, max_error: 0.01, ..Default::default() };
 let c = compress_with(&series, &rules, &eval, opts);
 ```
 
