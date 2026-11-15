@@ -1,0 +1,39 @@
+\section{Limitations and future work}
+\label{sec:conclusion}
+
+\paragraph{Scope of the rules.} We handle one series per rule. Aggregations
+across series (\code{sum by}) couple the budgets of a group, which the
+encoder must then see together; ratios need an interval enclosure; equality
+tests and \code{topk} admit no positive budget at their decision points.
+
+\paragraph{Known rules.} The budget is computed for a fixed rule set. A rule
+added later sees a reconstruction that was optimised for other rules, with
+only the optional pointwise cap as a guarantee. Re-compressing from the
+original is possible while it is retained (e.g.\ before compaction).
+
+\paragraph{Lookahead.} The budget of a sample depends on evaluations up to
+one window after it, so the encoder must buffer the longest window; it fits
+compaction or a buffered proxy, not a zero-latency write path.
+
+\paragraph{Data.} Our real data come from two public demo servers: 13 series,
+with thresholds recalibrated to quantiles because the deployed ones never
+fire. Production traces with more rules, more incidents and gaps are needed.
+
+\paragraph{Relaxations.} Counting \textsf{Pending} periods makes the
+criterion strict. Preserving firings only, or firing times up to $\delta$,
+admits budgets above the margin on short condition flips (\code{for}
+filters them), at the cost of reasoning on the automaton rather than per
+evaluation. The min-composition in \eqref{eq:budget} is feasible but not
+optimal: for linear aggregates the optimal split of a margin between samples
+is a knapsack-like problem.
+
+\section{Conclusion}
+
+Taking alert decisions as the correctness criterion turns lossy
+compression of monitoring data into a problem with a sound, computable,
+per-sample budget. Monotonicity of the aggregates makes the budget
+one-sided, and a coder that can keep its prediction whenever it is still on
+the admissible side converts that into a 2.3--2.5$\times$ smaller
+output than the symmetric Lipschitz box. On
+real Prometheus series the result is a few tenths to a few bits per value
+with every alert decision unchanged.

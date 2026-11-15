@@ -1,0 +1,70 @@
+\section{Model and correctness criterion}
+\label{sec:model}
+
+\paragraph{Series.} A series is a finite sequence $X = ((s_i, x_i))_{i=1}^{n}$
+with strictly increasing timestamps $s_i \in \mathbb{Z}$ (ms) and values
+$x_i \in \mathbb{R}$. A value-only compressor keeps the timestamps and
+returns $Y = ((s_i, y_i))$; the pointwise error is $e_i = y_i - x_i$.
+Timestamps are compressed losslessly by existing delta-of-delta schemes and
+are out of scope.
+
+\paragraph{Rules.} A threshold rule is $R = (F, w, \bowtie, \theta, h, k)$:
+an aggregate $F$, a range $w$, a comparison $\bowtie \in \{>, \ge, <, \le\}$,
+a threshold $\theta$, a hold duration $h$ (\code{for}) and $k$
+(\code{keep\_firing\_for}). It is the PromQL alert
+\code{expr: F(x[w]) $\bowtie$ $\theta$} over one series. At evaluation time
+$t$ the aggregate reads the samples with index in the support
+$S_R(t) = \{ i : t - w < s_i \le t \}$ (range selectors are left-open in
+Prometheus~3); for an instant selector (\code{last}) the support is the last
+sample in $(t - \lambda, t]$ with lookback $\lambda = 5$\,min. The aggregate is
+$f_R(X)(t) = F((x_i)_{i \in S_R(t)})$ and the condition is
+$c_R(X)(t) = [S_R(t) \ne \emptyset \wedge f_R(X)(t) \bowtie \theta]$.
+
+\paragraph{Decisions.} For an evaluation grid $T = (t_1 < t_2 < \dots)$ the
+alert state trajectory $D_R(X) \in \{\mathsf{Inactive}, \mathsf{Pending},
+\mathsf{Firing}\}^{|T|}$ is the run of the deterministic automaton
+$M_{h,k}$ of Prometheus' \code{rules/alerting.go} on the condition sequence:
+a true condition moves \textsf{Inactive} to \textsf{Pending}, and
+\textsf{Pending} to \textsf{Firing} once it has held for $h$; a false
+condition resets to \textsf{Inactive}, except that \textsf{Firing} persists
+for $k$ after the condition was last true.
+
+\begin{definition}[Decision preservation]
+A compressor $C$ is \emph{decision-preserving} for a rule set $\R$ on $X$
+over grid $T$ if $D_R(X) = D_R(C(X))$ for all $R \in \R$. It is
+\emph{phase-robust} if this holds for every grid $T$.
+\end{definition}
+
+The criterion counts \textsf{Pending} periods as well as firings, so it is
+stricter than ``the same alerts fire''. Relaxations (firing times within
+$\delta$, firings only) admit larger budgets and are left for future work
+(\cref{sec:conclusion}).
+
+\begin{lemma}[Automaton]
+\label{lem:automaton}
+If $c_R(X)(t) = c_R(Y)(t)$ for all $t \in T$, then $D_R(X) = D_R(Y)$.
+\end{lemma}
+\begin{proof}
+$M_{h,k}$ reads only $T$ and the condition sequence.
+\end{proof}
+
+\begin{lemma}[Phase robustness]
+\label{lem:phase}
+Let $F$ depend on $t$ only through $S_R(t)$ (true for \code{last} and
+\code{avg/sum/min/max\_over\_time}) and let
+$E = \{s_i\} \cup \{s_i + w\}$ ($s_i + \lambda$ for \code{last}). Then
+$S_R(t)$, hence $c_R(X)(t)$, is constant between consecutive points of $E$
+and empty before the first.
+\end{lemma}
+\begin{proof}
+$i \in S_R(t) \iff s_i \le t < s_i + w$, so membership changes only at
+$s_i$ or $s_i + w$.
+\end{proof}
+
+By \cref{lem:automaton,lem:phase}, preserving the conditions at the
+\emph{protected instants} $P_R = E$ preserves the trajectories on every grid,
+for any evaluation interval and phase, and $|E| \le 2n$. The encoder needs
+the rule's range $w$, not the scrape interval or the number of samples per
+window, so missed scrapes and irregular timestamps are covered. \code{rate}
+depends on $t$ continuously through extrapolation and is protected on the
+deployed grid $T$ only.

@@ -1,0 +1,48 @@
+\section{Related work}
+\label{sec:related}
+
+\paragraph{Correction-based safeguards.} Compression
+Safeguards~\cite{tyree2026safeguards} wrap any compressor with declarative
+requirements (pointwise bounds, sign preservation relative to an offset,
+bounds on quantities of interest over stencils) and enforce them by
+computing corrections after compression. A window-average threshold test on
+a regular grid can be expressed as a stencil QoI with the comparison itself
+as the quantity and bound zero, which is how we run it as a baseline
+(\cref{sec:eval-sg}). The differences are in what must be translated and
+how it is enforced. Hold durations need no translation for our criterion
+(\cref{lem:automaton}), but phase robustness does: a stencil fixes the
+window length in samples, so missed scrapes and unknown evaluation phases
+require one stencil per length seen and truncated windows at the edges.
+Prometheus' \code{rate} extrapolation and counter resets
+(\cref{prop:rate}) have no stencil form; our translation (reset-corrected
+increase over the sampled interval) changes decisions on gappy counters.
+Safeguards correct every violating point; our analytic budget is a sound
+start that needs no correction, and the optimistic variant corrects only
+flipped supports with the analytic budget as the floor.
+
+\paragraph{Quantity-of-interest preservation.} Jiao et
+al.~\cite{jiao2022qoi} derive pointwise error bounds from bounds on derived
+quantities by error propagation; our Lipschitz step is an instance. We bound
+\emph{decisions} rather than the error of a quantity, which makes the
+budget depend on the margin to a threshold, and we add the temporal
+structure (overlapping windows, phase, the alert automaton).
+
+\paragraph{Feature- and topology-preserving compression.} TopoSZ and its
+successors~\cite{yan2024toposz} preserve critical points and contour trees
+of scientific fields; adaptive schemes tighten bounds near detected
+features~\cite{adaptivefeature2024}. Level-set preservation at a level
+$\theta$ is sign preservation of $x - \theta$, the \code{last} special case
+of our setting; window aggregates and alert state have no counterpart there.
+
+\paragraph{Time-series compression.} Gorilla~\cite{pelkonen2015gorilla} and
+ALP~\cite{afroozeh2024alp} are lossless; SZ3~\cite{liang2023sz3} and recent
+error-bounded time-series compressors~\cite{shrink2025} guarantee a uniform
+pointwise bound. CAMEO~\cite{cameo2025} bounds the deviation of
+autocorrelation functions, and Muñiz-Cuza et
+al.~\cite{munizcuza2024forecasting} measure the effect of error-bounded
+compression on forecasting. None of them bounds discrete decisions.
+Industrial approaches (e.g.\ aggregating series that no alert or dashboard
+reads) select series rather than bound values. \todo{novelty search: DBLP /
+Scholar 2024--2026 for alert-aware, decision-preserving, rule-aware
+downsampling, SLO-aware telemetry; vendor patents (Datadog, Grafana Labs,
+Chronosphere, Splunk, Dynatrace).}

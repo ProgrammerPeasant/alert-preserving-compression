@@ -1,0 +1,70 @@
+\section{Codec}
+\label{sec:codec}
+
+The codec turns per-sample bounds $(\delta^-_i, \delta^+_i)$ into a
+bit stream whose decoded values satisfy
+$x_i - \delta^-_i \le y_i \le x_i + \delta^+_i$. A budget of zero (or NaN)
+forces an exact sample; $+\infty$ leaves it unconstrained. The format does
+not depend on the rules: the decoder sees only the stream.
+
+\paragraph{Blocks.} The series is cut into blocks of 128 samples. For each
+block the encoder picks the cheapest of (i) lossless Gorilla XOR
+coding~\cite{pelkonen2015gorilla} and (ii) closed-loop DPCM on a grid
+$q = 2^e$, with prediction from the previous reconstruction and either the
+step counts or their deltas coded. For a gauge the candidate exponents are,
+per sample, the largest $e$ whose grid provably hits the admissible interval
+($2^e \le \delta^- + \delta^+$), plus the two next finer grids, because the
+coded size is not monotone in the step on discrete data. For a counter the
+quantizer is the floor quantizer of \cref{prop:rate}(b), which keeps the
+reconstruction below the data and non-decreasing. A sample whose step count
+would exceed $2^{50}$, or whose reconstruction misses its interval in
+floating point, escapes to a raw 64-bit value. The encoder checks every
+reconstructed value against its bounds, so the bound holds for the actual
+floating-point output, bit for bit as the decoder computes it.
+
+\paragraph{Lazy steps.} Rounding to the nearest grid point produces
+unbiased errors, which suits a symmetric bound but wastes an asymmetric one.
+For every grid the encoder also tries the \emph{lazy} choice: the admissible
+step count closest to zero (the prediction itself if it is admissible) or to
+the previous step count. With one-sided bounds the prediction stays
+admissible for long runs, which the entropy coder turns into a few hundredths
+of a bit per sample. Four strategies (nearest/lazy $\times$ counts/deltas)
+are compared per block by exact coded cost.
+
+\paragraph{Entropy coding.} Every block decision and residual is coded with
+an LZMA-style adaptive binary range coder~\cite{martin1979range} with 15-bit
+probabilities: a zero flag, a sign and a unary bit length under a context of
+the previous residual's magnitude, then the top mantissa bits. Model rates
+start fast and slow down with a count-based schedule, so short streams adapt
+quickly. A fixed-width variant (zigzag codes per block) is kept for the
+ablation.
+
+\paragraph{Chunks.} Prometheus cuts head chunks at 120 samples, and each must
+decode on its own. The series can be coded as independent streams with 3--4
+bytes of overhead each. The budget is still planned on the whole series,
+since windows cross chunk boundaries. Counter chunks continue the previous
+chunk's reconstruction as a floor, otherwise the output could drop at a
+boundary and \code{rate} would see a spurious reset.
+
+\paragraph{Verify and repair.} After encoding, the reconstruction is decoded
+and every protected condition is re-evaluated with the reference semantics.
+On any evaluation that flipped, the budget on its support is zeroed and the
+series re-encoded. The loop terminates because an all-exact support reads the
+original values. For \code{sum/avg} the verifier (sliding sum), the
+reference evaluator (left-to-right) and Prometheus (Kahan) sum in different
+orders, which differ by at most $2\gamma_{n-1}\sum|y_i|$; the verifier
+therefore accepts an evaluation only if it lies farther than that from
+$\theta$, or its support is bitwise exact. The analytic budget keeps twice
+this margin and has needed no repair on any dataset; the loop makes the
+guarantee end to end against the reference evaluator.
+
+\paragraph{Optimistic budget.} The bounds of \cref{cor:onesided} hold for the
+worst case of all errors at once; in window aggregates actual errors mostly
+cancel. The encoder may start from $\kappa\delta^\pm_i$ with $\kappa > 1$:
+on every flipped evaluation the budget on its support is halved, never below
+the analytic budget, and zeroed once there. A support within the analytic
+budget cannot flip (\cref{thm:budget}), so the analytic budget is both the
+sound starting point at $\kappa = 1$ and the floor that bounds the number of
+rounds. This is the codec-side counterpart of the correction approach of
+Compression Safeguards~\cite{tyree2026safeguards}, restricted to the
+supports that actually flipped.

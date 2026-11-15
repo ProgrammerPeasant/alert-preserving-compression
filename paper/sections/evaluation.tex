@@ -1,0 +1,195 @@
+\section{Evaluation}
+\label{sec:eval}
+
+\subsection{Setup}
+
+\paragraph{Real data.} 13 series of raw 15\,s scrapes without gaps from the
+public Prometheus demo servers~\cite{promdemo}: node\_exporter gauges (load,
+available memory, free root filesystem, clock offset), Prometheus' own
+counters and gauges, a Caddy request counter and counters of a demo service.
+Two snapshots: 7 days (40\,320 samples per series) and 30 days (172\,800),
+released with the code because the servers keep only 31 days. The demo
+server runs the upstream node-mixin and prometheus-mixin alerts~\cite{nodemixin};
+nine of them reduce to a single series once constant denominators are folded
+into $\theta$. Counters without an upstream rule get
+\code{rate(x[5m]) > $\theta$ for 5m} and \code{rate(x[5m]) < $\theta$ for 10m}.
+The deployed thresholds never fire on a healthy host (\code{prod}); every
+series is therefore also run with $\theta$ at the 95th percentile
+(\code{q95}, a busy alert) and the median (\code{q50}, the aggregate crosses
+$\theta$ all the time) of the rule's own aggregate, placed midway between two
+distinct values so that discrete metrics do not sit exactly on $\theta$.
+This gives 26 rule variants per snapshot with 1\,864 (7\,d) and 7\,191
+(30\,d) firings.
+
+\paragraph{Synthetic data.} Five seeded generators of 7 days at 15\,s
+(CPU utilisation, request latency, memory, a request counter, and the same
+counter with 8\,\% missed scrapes, 1--6\,min outages and traffic hovering at
+the threshold), with two rules each that fire a few times per day.
+
+\paragraph{Evaluation.} Rules are evaluated every 30\,s at an offset of 7\,s
+from the scrapes. Decisions are compared on full alert state trajectories
+with the reference evaluator of the repository, which implements
+Prometheus~3 semantics. Sizes are bits per value of the value stream
+(timestamps excluded; raw is 64).
+
+\paragraph{Baselines.} All our baselines share the codec and its range coder,
+so they differ only in the error budget. \emph{Lossless} is the codec with a
+zero budget (Gorilla XOR blocks). \emph{Uniform-safe} is the largest uniform
+bound that satisfies \cref{thm:budget}. \emph{Uniform-tuned} is the largest
+uniform bound, swept over powers of four of the value range, for which it
+and every smaller swept bound change no decision \emph{on these data}: the
+best a user tuning a bound by hand could do, without any guarantee
+elsewhere. \emph{SZ3+SG} is SZ3~\cite{liang2023sz3} wrapped in Compression
+Safeguards~\cite{tyree2026safeguards} (1.0.0rc3) with one stencil QoI per
+window length the rule reads at any phase, the comparison itself as the
+quantity and bound zero, swept over 13 SZ3 bounds; we report its smallest
+output among the sweep points with zero changed decisions.
+\emph{Rule-aware} is the analytic budget (\cref{cor:onesided}), \emph{$\kappa$}
+the optimistic budget with $\kappa = 1024$.
+
+\subsection{Real series}
+\label{sec:eval-real}
+
+\begin{table}[t]
+\centering
+\caption{Mean bits per value over the 13 real series. Zero changed decisions
+in every rule-aware cell. ``/120'': Prometheus-sized independent chunks.}
+\label{tab:real}
+\begin{tabular}{llrrrrrrr}
+\toprule
+ & rules & lossless & unif.-safe & unif.-tuned & rule-aware & $\kappa$ & rule-aware/120 & $\kappa$/120 \\
+\midrule
+7\,d  & prod & 27.71 & 0.08 & 0.09 & 0.07 & 0.07 & 0.45 & 0.42 \\
+      & q95  & 25.52 & 6.91 & 7.35 & 1.13 & 1.01 & 1.77 & 1.59 \\
+      & q50  & 25.52 & 7.70 & 6.01 & 1.49 & 1.39 & 2.16 & 2.01 \\
+\midrule
+30\,d & prod & 27.77 & 0.08 & 0.10 & 0.06 & 0.06 & 0.43 & 0.41 \\
+      & q95  & 25.59 & 8.01 & 5.72 & 0.97 & 0.87 & 1.59 & 1.44 \\
+      & q50  & 25.59 & 7.47 & 5.91 & 1.16 & 1.09 & 1.82 & 1.69 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\Cref{tab:real} summarises the real data. With the deployed thresholds
+nothing fires and every codec, uniform ones included, needs under 0.1 bits
+per value: a threshold that is never approached constrains nothing. This is
+the common case in production and says nothing about the method. With
+recalibrated thresholds the rule-aware codec is $6.5\times$ / $4.0\times$
+smaller than the tuned uniform bound on 7 days and $5.9\times$ / $5.1\times$
+on 30 days, with a guarantee the tuned bound lacks. Per series it ranges from
+0.01 bits per value (free filesystem space, which changes rarely) to 3--4.5
+(dense counters under \code{rate} at the median). In Prometheus-sized chunks
+of 120 samples the rate grows by 0.6--0.7 bits per value, mostly fixed
+per-chunk overhead and model warm-up.
+
+\subsection{Comparison with Compression Safeguards}
+\label{sec:eval-sg}
+
+The optimistic codec is smaller than SZ3+SG on 19 of 26 variants in both
+snapshots, with a geometric mean of the ratio $\kappa$/SG of 0.61 (7\,d) and
+0.43 (30\,d). SG remains smaller on dense counters under \code{rate}
+(\code{prometheus\_samples\_appended}, \code{node\_cpu0\_idle},
+\code{demo\_api\_foo\_200}): our quantizer step is shared by a 128-sample
+block, while SG corrects individual samples. SG's \code{rate} translation
+cannot express Prometheus' extrapolation and changed decisions at some sweep
+points on 4 of 8 real counters across the two snapshots, and at 11 of 13
+points on the synthetic counter with missed scrapes, where its smallest safe
+output (8.45 bits per value) is $2.9\times$ / $3.1\times$ above our analytic
+(2.92) and optimistic (2.72) codec. A user
+cannot know in advance which SG bound is safe. SG needs up to 60\,s per sweep
+point on a 30-day counter, against 4--6\,MB/s for our whole verified
+codec (\cref{sec:throughput}).
+
+\subsection{Synthetic series}
+
+\begin{table}[t]
+\centering
+\caption{Synthetic series, 7 days, bits per value (one stream per series).
+SZ3+SG: smallest output with zero changed decisions over its sweep.}
+\label{tab:synth}
+\begin{tabular}{lrrrrrr}
+\toprule
+dataset & lossless & unif.-safe & unif.-tuned & SZ3+SG & rule-aware & $\kappa$ \\
+\midrule
+cpu            & 53.96 & 11.57 & 2.55 & 0.16 & 0.07 & 0.05 \\
+latency        & 55.24 &  7.22 & 2.81 & 0.20 & 0.08 & 0.07 \\
+memory         & 49.91 & 12.96 & 6.92 & 0.57 & 0.21 & 0.14 \\
+requests       & 19.68 &  2.02 & 0.81 & 0.69 & 0.47 & 0.46 \\
+requests-gappy & 21.76 & 11.46 & 9.46 & 8.45 & 2.92 & 2.72 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+On the synthetic gauges (\cref{tab:synth}) the rule-aware codec is
+$33$--$36\times$ below the tuned uniform bound; on the counters
+$1.7\times$ and $3.2\times$. The analytic codec is smaller than SZ3+SG on
+all five datasets; with the box budget of \cref{thm:budget} it was larger
+on the three gauges, which is what motivated \cref{cor:onesided}. The size
+grows with the share of samples near a threshold (0.01 to 0.66 bits per
+value as that share goes from 0.1\,\% to 10\,\% on \code{cpu}).
+
+\paragraph{Fidelity.} The uncapped reconstruction is only good for the
+rules: a sample free in one direction drifts until a bound stops it. With a
+pointwise cap $\eps_{\max}$ the rule-aware codec costs within 2\,\% of a
+uniform bound of the same size and keeps every decision, whereas a uniform
+$\eps = 10^{-3}$ of the range changes 17, 1\,020 and 10\,655 alert states
+on \code{memory}, \code{requests} and \code{requests-gappy}. Even the
+tuned uniform bound, applied in 120-sample chunks instead of the
+whole-series encoding it was tuned on, changes decisions on two datasets:
+a bound tuned on one encoding does not transfer to another encoding of the
+same data.
+
+\subsection{Ablation}
+\label{sec:ablation}
+
+\begin{table}[t]
+\centering
+\caption{Ablation: geometric mean of the size ratio to the full analytic
+codec (row 4) over the synthetic series and the q95/q50 real variants
+(7-day snapshot; the 30-day snapshot, in the repository, shows the same
+ordering). Every cell keeps every
+decision.}
+\label{tab:ablation}
+\begin{tabular}{lrrr}
+\toprule
+configuration & synthetic & real q95 & real q50 \\
+\midrule
+box budget, nearest steps (\cref{thm:budget}) & 2.30 & 2.51 & 2.46 \\
+\quad + one-sided budget (\cref{cor:onesided}) & 2.19 & 2.11 & 1.93 \\
+\quad + lazy steps & 1.00 & 1.00 & 1.00 \\
+\quad + scale search (full analytic codec) & 1.00 & 1.00 & 1.00 \\
+\quad + optimistic budget, $\kappa = 1024$ & 0.81 & 0.92 & 0.95 \\
+full analytic $-$ one-sided budget & 1.38 & 1.23 & 1.22 \\
+full analytic $-$ lazy steps & 2.19 & 2.03 & 1.90 \\
+$\kappa = 1024$ $-$ one-sided budget & 0.93 & 1.06 & 1.10 \\
+full analytic, fixed-width codes & 7.57 & 7.31 & 5.94 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\Cref{tab:ablation} adds one component at a time. The one-sided budget and
+the lazy step choice together reduce the size $2.3$--$2.5\times$ with the
+same stream format, but only together: with round-to-nearest the grid is
+chosen from the width of the admissible interval and the rounding spends it
+symmetrically, so one-sided bounds alone gain little and occasionally lose.
+On counters all of the gain comes from lazy steps, which keep the prediction
+on the samples that are no window's end (\cref{prop:rate}(d)). Encoding
+scaled copies of the budget, which we had added for non-monotone coded
+sizes, is redundant once finer grid candidates are offered per block (smaller
+on 1 of 31 datasets by at most 0.006 bits per value). The optimistic budget
+saves a further 5--19\,\%, but does not replace the one-sided budget on real
+data. Entropy coding removes the one-bit-per-value floor of fixed-width
+codes ($5.9$--$8.5\times$ over both snapshots).
+
+\subsection{Throughput}
+\label{sec:throughput}
+
+On one core (MB/s of raw float64 input, synthetic \code{cpu} and
+\code{requests}, 40\,320 samples), the $O(n)$ budget runs at 46--72\,MB/s,
+the encoder at 30--32\,MB/s (every grid is tried with four step
+strategies) and the decoder at 2.4--3.0\,GB/s. The verified end-to-end
+compressor runs at 4--6\,MB/s with the scale search and 14--20\,MB/s
+without it; since the search no longer changes the size
+(\cref{sec:ablation}), the latter is the relevant figure. For comparison,
+a 2-hour Prometheus block holds 480 samples per series at 15\,s, so one
+core compresses about 3\,600 series-blocks per second.

@@ -1,0 +1,137 @@
+\section{Error budget}
+\label{sec:budget}
+
+\subsection{A sufficient condition}
+
+For a protected evaluation $(R,t)$ with non-empty support let the margin be
+$m_R(t) = |f_R(X)(t) - \theta|$ and let $L_R(t)$ be a Lipschitz constant of
+$F$ on $\mathbb{R}^{|S_R(t)|}$ in the sup norm. \code{last},
+\code{avg\_over\_time}, \code{min\_over\_time} and \code{max\_over\_time} have
+$L = 1$; \code{sum\_over\_time} has $L = |S_R(t)|$. The tolerance of the
+evaluation is $\tau_R(t) = m_R(t)/L_R(t)$ and the budget of sample $i$ is
+the minimum over every evaluation that reads it:
+\begin{equation}
+  \eps_i = \min\{\tau_R(t) : R \in \R,\ t \in P_R,\ i \in S_R(t)\},
+  \qquad \min\emptyset = +\infty .
+  \label{eq:budget}
+\end{equation}
+
+\begin{theorem}
+\label{thm:budget}
+Call $(R,t)$ \emph{tight} if preserving $c_R(X)(t)$ needs a strict
+inequality ($c$ true with $\bowtie \in \{>,<\}$, or false with
+$\bowtie \in \{\ge,\le\}$). If $|y_i - x_i| \le \eps_i$ for all $i$, strictly
+on the supports of tight evaluations, then $c_R(Y)(t) = c_R(X)(t)$ for all
+$R \in \R$ and $t \in P_R$, and hence $D_R(Y) = D_R(X)$ on every grid (on $T$
+for \code{rate}).
+\end{theorem}
+\begin{proof}
+Supports depend on timestamps only. By the Lipschitz bound
+$|f_R(Y)(t) - f_R(X)(t)| \le L_R(t)\max_{i\in S_R(t)}|e_i| \le m_R(t)$,
+strictly when tight, so $f_R(Y)(t)$ stays on the same side of $\theta$.
+\Cref{lem:phase,lem:automaton} finish the proof.
+\end{proof}
+
+The Lipschitz step is ordinary quantity-of-interest error
+propagation~\cite{jiao2022qoi}. What is specific is the granularity: errors
+live on samples and margins on evaluations, and one sample feeds every
+evaluation whose window contains it, so the budget is a minimum over
+overlapping windows. Two consequences follow. A streaming encoder needs a
+lookahead of the longest window $\max_R w_R$, so the natural deployment point
+is block compaction (Prometheus compacts 2-hour blocks) or a buffered proxy.
+And a sample at margin zero must be exact. Since any smaller budget is also
+sufficient, a pointwise cap $\min(\eps_i, \eps_{\max})$ adds a fidelity
+guarantee for dashboards without weakening the alert guarantee.
+
+\subsection{One-sided budget}
+
+The box of \cref{thm:budget} is pessimistic: near a threshold a series
+mostly lies on one side, and only errors towards $\theta$ can flip a
+decision.
+
+\begin{corollary}[One-sided budget]
+\label{cor:onesided}
+Call $(R,t)$ \emph{upper} if $f_R(X)(t)$ lies on the side of $\theta$ that
+only a decrease can leave ($c$ true with $\bowtie \in \{>,\ge\}$ or false with
+$\bowtie\in\{<,\le\}$), and \emph{lower} otherwise. Let $\delta^-_i$
+($\delta^+_i$) be the minimum of $\tau_R(t)$ over the upper (lower)
+evaluations whose support contains $i$. If
+$-\delta^-_i \le y_i - x_i \le \delta^+_i$ for all $i$ (strict where
+tight), every protected condition is preserved.
+\end{corollary}
+\begin{proof}
+All aggregates above are non-decreasing in each argument. For an upper
+$(R,t)$ let $z_i = \min(y_i, x_i)$ on its support. Then
+$|z_i - x_i| \le \delta^-_i \le \tau_R(t)$, so $z$ satisfies
+\cref{thm:budget} at $(R,t)$, and $F(y) \ge F(z)$ keeps $f_R(Y)(t)$ on the
+upper side. Lower evaluations are symmetric with $\max$.
+\end{proof}
+
+Since $\eps_i = \min(\delta^-_i, \delta^+_i)$, the box is contained in the
+one-sided set, and the difference is large: a sample read only by upper
+evaluations may move up without limit. The coder exploits it only if it can
+place reconstructions asymmetrically (\cref{sec:codec}); the ablation shows
+that the one-sided budget alone, with round-to-nearest, gains little
+(\cref{sec:ablation}).
+
+\subsection{Counters and \code{rate}}
+
+Prometheus' \code{rate} over a window with first value $x_f$, last value
+$x_l$, reset correction $\rho = \sum_{x_i < x_{i-1}} x_{i-1}$ and increase
+$\Delta = x_l - x_f + \rho$ extrapolates $\Delta$ towards the window
+boundaries, but not below zero:
+$\mathrm{rate} = \Delta (S + \min(d_s, d_z) + d_e)/(S W)$, where $S$ is the
+sampled interval, $W$ the range, $d_s, d_e$ timestamp-only extrapolation
+distances and $d_z = S x_f / \Delta$ the distance to the counter's zero
+point.
+
+\begin{proposition}
+\label{prop:rate}
+(a) The reset indicator $[x_i < x_{i-1}]$ is a comparison of two samples, so
+an arbitrarily small error can create a reset and change $\Delta$ by a whole
+counter value; no positive symmetric budget preserves \code{rate} in general.
+(b) The closed-loop floor quantizer
+$y_i = y_{i-1} + q\lfloor (x_i - y_{i-1})/q\rfloor$ (exact when the step
+count would be negative) gives $x_i - q < y_i \le x_i$ and preserves
+$x_i \ge x_{i-1} \Rightarrow y_i \ge y_{i-1}$; keeping the two samples
+around each true reset exact preserves the reset set.
+(c) On the reset-preserving set, $\mathrm{rate}$ is Lipschitz in
+$(\Delta, x_f)$ away from $x_f = 0$, with constant
+$\approx (2 + r)/W$ for a densely sampled window with $r$ resets.
+(d) Under (b), $\Delta$ and $x_f$ read only the window's first and last
+samples and the preserved reset values, so the budget of a \code{rate}
+evaluation applies to the two ends of its window only.
+\end{proposition}
+
+The implementation does not use the constant in (c): it computes a sound
+interval enclosure of the \code{rate} formula over the box
+$y_i \in [x_i - \eps, x_i]$, including the zero-point branch, and finds the
+largest safe $\eps$ by bisection. By (d), with a 30\,s evaluation grid on
+15\,s scrapes about half of a counter's samples are no window's end and are
+constrained only by monotonicity.
+
+\subsection{Where no budget exists}
+
+A positive budget exists at $x$ iff $x$ is interior to the set of inputs
+with the same condition. Equality tests, \code{changes()}, \code{floor} and
+\code{round} inside expressions, and label-selecting aggregations
+(\code{topk}) violate this at their decision points and need exact samples
+there; ratios and \code{histogram\_quantile} are locally Lipschitz and need
+an interval enclosure like \code{rate}.
+
+\subsection{Floating point and complexity}
+
+The budget is computed in floating point. The code subtracts a rounding
+slack from the margin (Higham's $\gamma_n$ bound for sums~\cite{higham2002accuracy})
+and uses the next representable value below the tolerance for strict
+comparisons. Monotonicity holds bitwise for \code{last}, \code{min} and
+\code{max}; Prometheus sums with Kahan compensation, which is not monotone,
+so for \code{sum/avg} \cref{cor:onesided} goes through the error bound
+instead, and an evaluation whose margin is within the rounding slack is
+constrained in both directions.
+
+Supports are monotone in $t$, so all supports follow by two pointers, window
+aggregates by a two-stacks sliding queue, and the per-sample minimum in
+\eqref{eq:budget} is a sliding minimum over instants (monotone deque). The
+budget costs $O(n + |P_R|)$ per rule; \code{rate} adds a bisection of about
+a dozen enclosure evaluations per instant.

@@ -1,0 +1,70 @@
+\section{Introduction}
+\label{sec:intro}
+
+Monitoring systems such as Prometheus~\cite{prometheus} store millions of
+floating-point time series, and most of the stored bytes are never read by a
+human. They are read by alerting rules: threshold tests over windowed
+aggregates such as \code{avg\_over\_time(x[5m]) > 0.8 for 10m} or
+\code{rate(requests[5m]) < 20}. Lossless time-series compressors in the
+Gorilla family~\cite{pelkonen2015gorilla} spend 20--55 bits per value on
+typical gauges, and error-bounded lossy compressors such as
+SZ3~\cite{liang2023sz3} trade a uniform pointwise bound $\eps$ for size. A
+uniform bound is the wrong currency for alerting: far from a threshold almost
+any error is harmless, while near a threshold an error smaller than the
+measurement noise can create or suppress an alert. Choosing $\eps$ by hand
+either wastes space or silently changes which alerts fire.
+
+We take the decisions themselves as the correctness criterion. A lossy
+compressor is \emph{alert-preserving} for a rule set if, for every rule,
+the alert state trajectory (\code{Inactive}/\code{Pending}/\code{Firing} at
+every evaluation) computed on the reconstruction equals the one computed on
+the original. Compression is then free to discard everything the rules
+cannot observe.
+
+\paragraph{Contributions.}
+\begin{itemize}
+  \item A formal model of PromQL threshold alerts over one series
+    (left-open windows, \code{for}/\code{keep\_firing\_for} automaton,
+    Prometheus' extrapolated \code{rate}) and decision preservation as a
+    correctness criterion, including \emph{phase robustness}: preservation for
+    every evaluation interval and phase, without knowing the window lengths in
+    samples (\cref{sec:model}).
+  \item A per-sample error budget derived from the rules: the minimum, over
+    every evaluation whose window contains the sample, of the evaluation's
+    margin divided by a Lipschitz constant of its aggregate
+    (\cref{thm:budget}). Because every aggregate except \code{rate} is
+    monotone, the budget splits into independent downward and upward
+    tolerances (\cref{cor:onesided}); for \code{rate} we characterise counter
+    resets as discontinuities and show that only the window ends carry a
+    budget under an order-preserving quantizer (\cref{prop:rate}). The
+    budget is computed in $O(n)$ per rule.
+  \item A codec that turns the asymmetric budget into bits: closed-loop DPCM
+    on power-of-two grids with a \emph{lazy} step choice, adaptive binary range
+    coding, and a verify-and-repair loop against a reference evaluator that
+    makes the guarantee end to end in floating point. An optimistic variant
+    starts from a multiple of the analytic budget and repairs only the
+    evaluations that flip, with the analytic budget as the floor
+    (\cref{sec:codec}).
+  \item Machine-checked bit-precise proofs (Kani~\cite{vanhattum2022kani})
+    of the floating-point budget for \code{last}, \code{min\_over\_time} and
+    \code{max\_over\_time} and of codec invariants (\cref{sec:verification}).
+  \item An evaluation on synthetic series and on 13 real series from the
+    public Prometheus demo servers with their upstream alert rules
+    (7- and 30-day snapshots, released with the code), against uniform
+    error bounds and Compression Safeguards~\cite{tyree2026safeguards}, the
+    closest related system, with an ablation of every codec component
+    (\cref{sec:eval}).
+\end{itemize}
+
+\paragraph{Results in brief.} No rule-aware output changed a single alert
+state, over 1\,864 (7-day) and 7\,191 (30-day) firings on real data. With
+thresholds that fire, the codec needs about 1--1.5 bits per value on real
+series, $4$--$6.5\times$ less than a uniform bound tuned by hand on the
+same data (which has no guarantee), and it is smaller than Compression
+Safeguards over SZ3 on 19 of 26 real rule variants and on every synthetic
+one. The ablation attributes a $2.3$--$2.5\times$ reduction to the
+combination of the one-sided budget with the lazy step choice.
+
+The code, data snapshots and every table of this paper are reproducible from
+\url{https://github.com/ProgrammerPeasant/alert-preserving-compression}
+\todo{Zenodo DOI for the dataset snapshots}.

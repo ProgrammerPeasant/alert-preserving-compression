@@ -1,0 +1,47 @@
+\section{Machine-checked proofs}
+\label{sec:verification}
+
+\Cref{thm:budget} is a statement about real numbers; the code evaluates
+margins, tolerances and aggregates in IEEE-754 double precision. We check the
+floating-point implementation with Kani~\cite{vanhattum2022kani}, a bounded
+model checker for Rust built on CBMC~\cite{kroening2014cbmc}, which encodes
+floating-point operations bit-precisely. Harnesses quantify over all finite
+inputs (and, where stated, NaN and infinities) of a fixed shape.
+
+A monolithic harness for ``budget implies same condition'' over a window of
+three samples does not finish in 6 hours for any aggregate: symbolic
+execution is fast, but the final SAT query over the chain of floating-point
+operations (aggregate, subtraction, \code{next\_down}, comparison) does not
+close. We therefore prove \cref{thm:budget} for \code{last},
+\code{min\_over\_time} and \code{max\_over\_time} compositionally, with an
+abstract tolerance $\tau$ separating the expensive tolerance computation
+from the window structure:
+\begin{enumerate}
+  \item[(A)] \emph{scalar tolerance}, one harness per comparison: if
+    $\mathrm{fl}|y' - v| \le \tau(v)$, where $\tau$ is the implemented
+    tolerance function, then $y'$ and $v$ are on the same side of $\theta$
+    (31--39 min each);
+  \item[(B)] \emph{window lemmas} on at most four variables: the extremum is
+    attained by some sample; $\mathrm{fl}|y_j - x_k| \le
+    \max(\mathrm{fl}|y_j - x_j|, \mathrm{fl}|y_k - x_k|)$ for the arg-extrema
+    $j, k$ (99 and 116 min); rounded subtraction is monotone (65 min);
+  \item[(C)] the implemented tolerance of a window equals
+    $\tau(f(x))$ bitwise ($\le 1$ min), and the aggregates are monotone
+    (\cref{cor:onesided}; 1--2 s).
+\end{enumerate}
+(A)--(C) compose to the floating-point version of \cref{thm:budget} for
+these aggregates, for every window length. In addition, the decoder's
+reconstruction is proved bit-identical to the encoder's for every block
+parameter, including $-0.0$, together with the gauge and counter
+invariants of the quantizer; zigzag and varint codes and the bit-level
+specification of the bit I/O round-trip.
+
+\paragraph{Not yet proved.} \code{sum/avg\_over\_time} need a rounded-sum
+error lemma in place of (B); the range coder and the concrete bit writer
+exhaust memory or time in symbolic execution (unbounded \code{Vec} growth,
+a loop bound depending on a symbolic counter). These parts are covered by
+property tests: round-trip tests of both formats with NaN, infinite and zero
+budgets and counters, and $5 \times 2000$ randomised decision-preservation
+cases cross-checked against a per-instant reference evaluator; a mutation
+(budget $\times 3$) is caught. \todo{re-run \code{quantize\_matches\_decoder\_and\_budget}
+after the one-sided change (harness updated, run time not recorded).}
