@@ -266,6 +266,7 @@ paper/               arXiv preprint draft (LaTeX: main.tex, sections/, refs.bib)
 cargo test --release                              # unit + property tests (10000 random cases)
 cargo run --release -p alertsafe-bench -- all 7   # H1-H5, H7 on 7 synthetic days
 tar -C data -xJf datasets/prom-demo-2026-11-02.tar.xz   # real series of H8
+# both snapshots (7 d, 30 d) are archived at https://doi.org/10.5281/zenodo.24442344
 # or fetch a fresh week: scripts/fetch_real.py data/real 7 (stdlib Python)
 cargo run --release -p alertsafe-bench -- h8 data/real   # H1/H4/H7 on them
 cargo run --release -p alertsafe-bench -- ablation 7 --real data/real   # codec ablation
