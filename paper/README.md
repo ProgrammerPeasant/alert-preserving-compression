@@ -3,7 +3,10 @@
 `tectonic main.tex` (fetches packages on demand) or `latexmk -pdf main.tex`
 (TeX Live: amsmath, cleveref, hyperref, booktabs, graphicx, microtype,
 lmodern; bibliography style `plainurl`). Compiles cleanly with tectonic
-(2026-11-22: 13 pages, no overfull boxes, no BibTeX warnings).
+(2026-11-22: 14 pages, no overfull boxes, no BibTeX warnings).
+
+arXiv source tarball (sources, figure PDFs, prebuilt `main.bbl`):
+`scripts/arxiv.sh [OUT.tar.gz]`.
 
 Every number comes from `docs/results.md`, `docs/results-real.md` and
 `docs/ablation.md` (2026-11-15).
