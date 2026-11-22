@@ -10,8 +10,8 @@ Every number comes from `docs/results.md`, `docs/results-real.md` and
 
 ## Open before submission
 
-- `\todo{}` markers: affiliation/e-mail/date, Zenodo DOI for the dataset
-  snapshots.
+- `\todo{}`: Zenodo DOI for the dataset snapshots (archive:
+  `scripts/package_dataset.py OUT.tar.gz`).
 - `refs.bib` checked against Crossref/arXiv/DOI metadata (2026-11-22); read
   each cited paper in full. Novelty search: `docs/novelty-search.md`
   (manual DBLP/Scholar/Google Patents pass still open).
