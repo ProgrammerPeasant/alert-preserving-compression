@@ -41,8 +41,20 @@ pointwise bound. CAMEO~\cite{cameo2025} bounds the deviation of
 autocorrelation functions, and Muñiz-Cuza et
 al.~\cite{munizcuza2024forecasting} measure the effect of error-bounded
 compression on forecasting. None of them bounds discrete decisions.
-Industrial approaches (e.g.\ aggregating series that no alert or dashboard
-reads) select series rather than bound values. \todo{novelty search: DBLP /
-Scholar 2024--2026 for alert-aware, decision-preserving, rule-aware
-downsampling, SLO-aware telemetry; vendor patents (Datadog, Grafana Labs,
-Chronosphere, Splunk, Dynatrace).}
+Plato~\cite{lin2020plato} gives deterministic error bounds on aggregate
+queries over compressed series, but bounds a numeric result rather than
+the side of a threshold it falls on.
+
+\paragraph{Downstream guarantees and industrial practice.} The closest
+guarantee outside time series is cluster preservation for particle
+data~\cite{ren2026clusters}: friends-of-friends membership depends on
+threshold predicates over distances, and a post-hoc correction within the
+pointwise bound restores it, as our repair loop restores flipped supports.
+Industrial cost controls select series rather than bound values: Grafana's
+Adaptive Metrics recommends aggregating away labels that no dashboard, rule
+or recent query uses, and makes no recommendation at all for a metric read
+by a recording or alerting rule~\cite{grafana2026adaptive}, exactly the
+series our method targets. A search
+of the literature (Crossref, arXiv, EDBT/VLDB proceedings, 2015--2026) and
+of vendor documentation found no compressor that guarantees alert
+decisions.
