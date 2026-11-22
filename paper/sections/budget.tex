@@ -69,10 +69,22 @@ upper side. Lower evaluations are symmetric with $\max$.
 
 Since $\eps_i = \min(\delta^-_i, \delta^+_i)$, the box is contained in the
 one-sided set, and the difference is large: a sample read only by upper
-evaluations may move up without limit. The coder exploits it only if it can
+evaluations may move up without limit (\cref{fig:budget}). The coder exploits it only if it can
 place reconstructions asymmetrically (\cref{sec:codec}); the ablation shows
 that the one-sided budget alone, with round-to-nearest, gains little
 (\cref{sec:ablation}).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{budget}
+\caption{One-sided budget and the codec's reconstruction on two hours of
+\code{node\_load1} (7-day snapshot, rule \code{last > }$\theta$ with $\theta$
+at the 95th percentile). Below $\theta$ only the upward error is bounded,
+above it only the downward one, so the admissible interval (shaded) is a
+half-line and the reconstruction collapses to two levels; every alert
+decision is unchanged.}
+\label{fig:budget}
+\end{figure}
 
 \subsection{Counters and \code{rate}}
 

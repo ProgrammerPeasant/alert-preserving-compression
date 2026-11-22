@@ -15,5 +15,5 @@ Every number comes from `docs/results.md`, `docs/results-real.md` and
   snapshots, novelty search (DBLP/Scholar, vendor patents).
 - `refs.bib`: entries marked VERIFY come from search snippets; check every
   entry against the published version (and read each cited paper in full).
-- Figures: none yet (candidates: budget along a series near θ; size vs
-  share of time near θ from H2; ablation bars).
+- Figures (`figures/*.pdf`, from `uv run scripts/figures.py`): check
+  sizes and placement once compiled.

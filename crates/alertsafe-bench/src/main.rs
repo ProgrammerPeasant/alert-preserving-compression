@@ -538,6 +538,14 @@ fn main() {
         real::h8(std::path::Path::new(data));
         return;
     }
+    if what == "budget" {
+        let (Some(data), Some(name), Some(out)) = (args.get(2), args.get(3), args.get(4)) else {
+            eprintln!("usage: alertsafe-bench budget DATA SERIES@VARIANT OUT.csv");
+            std::process::exit(2);
+        };
+        real::budget_csv(std::path::Path::new(data), name, std::path::Path::new(out));
+        return;
+    }
     if what == "ablation" {
         let flag = |f: &str| {
             args.iter()

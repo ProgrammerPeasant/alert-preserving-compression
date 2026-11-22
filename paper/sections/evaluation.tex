@@ -85,8 +85,19 @@ per-chunk overhead and model warm-up.
 \subsection{Comparison with Compression Safeguards}
 \label{sec:eval-sg}
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{sg}
+\caption{Bits per value on the real series: our optimistic codec
+($\kappa = 1024$), the smallest SZ3+SG output with no changed decision over
+its bound sweep, and our codec with the largest uniform bound that keeps
+every decision on these data (tuned, no guarantee). A grey bar joins ours
+to SZ3+SG.}
+\label{fig:sg}
+\end{figure}
+
 The optimistic codec is smaller than SZ3+SG on 19 of 26 variants in both
-snapshots, with a geometric mean of the ratio $\kappa$/SG of 0.60 (7\,d) and
+snapshots (\cref{fig:sg}), with a geometric mean of the ratio $\kappa$/SG of 0.60 (7\,d) and
 0.42 (30\,d). SG remains smaller on dense counters under \code{rate}
 (\code{prometheus\_samples\_appended}, \code{node\_cpu0\_idle},
 \code{demo\_api\_foo\_200}): our quantizer step is shared by a 128-sample
@@ -126,7 +137,17 @@ $2.2\times$ and $3.2\times$. The analytic codec is smaller than SZ3+SG on
 all five datasets; with the box budget of \cref{thm:budget} it was larger
 on the three gauges, which is what motivated \cref{cor:onesided}. The size
 grows with the share of samples near a threshold (0.01 to 0.66 bits per
-value as that share goes from 0.1\,\% to 10\,\% on \code{cpu}).
+value as that share goes from 0.1\,\% to 10\,\% on \code{cpu},
+\cref{fig:h2}).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.5\linewidth]{h2}
+\caption{Size of the rule-aware codec on synthetic \code{cpu} (7 days,
+one rule) against the share of samples whose budget is below 0.01, for
+$\theta \in \{0.55, \dots, 0.95\}$ and three incident rates.}
+\label{fig:h2}
+\end{figure}
 
 \paragraph{Fidelity.} The uncapped reconstruction is only good for the
 rules: a sample free in one direction drifts until a bound stops it. With a

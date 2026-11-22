@@ -288,3 +288,32 @@ pub fn h8(dir: &Path) {
         }
     }
 }
+
+/// Per-sample budget and reconstruction of one dataset (`series@variant`) as
+/// CSV, for the paper's budget figure (`scripts/figures.py`).
+pub fn budget_csv(dir: &Path, name: &str, out: &Path) {
+    let real = load(dir);
+    let Some(ds) = datasets(&real).into_iter().find(|d| d.name == name) else {
+        eprintln!("no dataset {name}");
+        std::process::exit(2);
+    };
+    let g = eval_grid(&ds.series);
+    let c = alertsafe_codec::compress(&ds.series, &ds.rules, &g);
+    let y = c.decode();
+    let mut w = String::from("t_ms,x,down,up,y\n");
+    let s = &ds.series;
+    for ((((t, x), d), u), y) in
+        s.ts.iter()
+            .zip(&s.vals)
+            .zip(&c.plan.down)
+            .zip(&c.plan.up)
+            .zip(&y)
+    {
+        w += &format!("{t},{x},{d},{u},{y}\n");
+    }
+    let mut rules = String::new();
+    for r in &ds.rules {
+        rules += &format!("# rule {:?} {:?} {}\n", r.agg, r.cmp, r.threshold);
+    }
+    std::fs::write(out, rules + &w).expect("write csv");
+}
