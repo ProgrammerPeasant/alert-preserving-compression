@@ -12,6 +12,7 @@
 \usepackage{hyperref}
 \usepackage[capitalise,noabbrev]{cleveref}
 \usepackage{microtype}
+\setlength{\emergencystretch}{2em}
 
 \newtheorem{definition}{Definition}
 \newtheorem{lemma}{Lemma}
@@ -24,7 +25,9 @@
 \newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
 \newcommand{\R}{\mathcal{R}}
 \newcommand{\eps}{\varepsilon}
-\newcommand{\code}[1]{\texttt{#1}}
+% Long identifiers may break after an underscore.
+\newcommand{\code}[1]{\texttt{\let\_\codeus #1}}
+\newcommand{\codeus}{\textunderscore\allowbreak}
 
 \title{Alert-Preserving Lossy Compression of Monitoring Time Series}
 \author{Bogdan Serykh\\ HSE University \todo{affiliation, e-mail}}
