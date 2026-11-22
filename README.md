@@ -145,38 +145,40 @@ component ablation: [`docs/ablation.md`](docs/ablation.md).
 | cpu | `avg_over_time[5m] > 0.8 for 10m`, `max_over_time[1m] > 0.97 for 2m` | 53.96 | 11.57 | 2.55 | **0.07** |
 | latency | `avg_over_time[5m] > 0.5 for 5m`, `x > 1 for 2m keep_firing_for 5m` | 55.24 | 7.22 | 2.81 | **0.08** |
 | memory | `x > 4.5e9 for 15m`, `avg_over_time[30m] > 4e9 for 30m` | 49.91 | 12.96 | 6.92 | **0.21** |
-| requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 19.68 | 2.02 | 0.81 | **0.47** |
-| requests-gappy | `rate[5m] > 700 for 5m`, `rate[5m] < 600 for 10m`; 8% missed scrapes, rate hovering at θ | 21.76 | 11.46 | 9.46 | **2.92** |
+| requests | `rate[5m] > 700 for 5m`, `rate[5m] < 20 for 10m` | 19.68 | 2.02 | 0.78 | **0.35** |
+| requests-gappy | `rate[5m] > 700 for 5m`, `rate[5m] < 600 for 10m`; 8% missed scrapes, rate hovering at θ | 21.76 | 11.46 | 9.46 | **2.91** |
 
 All columns share the entropy-coded format. On the gauges the rule-aware
 codec is 33 to 36× below a uniform bound tuned on the data and 61 to 158×
-below the guaranteed one; on the counters 1.7× (`requests`) and 3.2×
+below the guaranteed one; on the counters 2.2× (`requests`) and 3.2×
 (`requests-gappy`) below the tuned bound. The rate grows with the time spent
 near thresholds (H2). In Prometheus-sized chunks of 120 samples the rate is
-0.29–0.97 bits per value (3.64 on `requests-gappy`), 1.7 to 16× below the
+0.26–0.95 bits per value (3.64 on `requests-gappy`), 1.7 to 16× below the
 tuned uniform bound under the same chunking. The reconstruction is only
 faithful near thresholds; with a pointwise cap it costs within 2% of a
 uniform bound of the same size, while a uniform ε = 10⁻³ of the range
-changes decisions on three datasets. Decode runs at 2.4–3.0 GB/s and encode
-at 30–32 MB/s per core; the full verified `compress` at 4–6 MB/s, or 14–20
-MB/s without the (now redundant) budget-scale search.
+changes decisions on three datasets. Decode runs at 2.5–2.9 GB/s and encode
+at 22 MB/s per core; the full verified `compress` at 11–16 MB/s (it was
+4–6 MB/s with the budget-scale search, now off by default: redundant, see
+the ablation).
 
 **Ablation.** From the Theorem 1 box budget with round-to-nearest to the
-full codec the size falls 2.3× (synthetic) and 2.4–2.5× (real), with the
-same stream format. The one-sided budget (Corollary 1) and the lazy step
+full codec the size falls 2.4–2.5× (synthetic and real), with the same
+stream format. The one-sided budget (Corollary 1) and the lazy step
 choice only work together: one-sided bounds with nearest rounding gain
-little. Fixed-width residual codes are 6–8.5× larger.
+little. Fixed-width residual codes are 6–8.6× larger. Encoding scaled copies of
+the budget no longer helps on any dataset.
 
 **Against Compression Safeguards (H6, H7).** SZ3 wrapped in safeguards
 translated from the rules keeps every decision on the four original
 datasets, but the analytic rule-aware budget alone is smaller on all five
-(0.07–0.47 vs 0.16–0.69 bits per value; it lost on the gauges before the
+(0.07–0.35 vs 0.16–0.69 bits per value; it lost on the gauges before the
 one-sided budget). An optimistic budget (κ = 1024 × the analytic one) with
-a posteriori repair on the flipped supports (`Options::slack`) is 1.5–4.1×
+a posteriori repair on the flipped supports (`Options::slack`) is 2.0–4.2×
 below SZ3+SG. On a counter with missed scrapes (`requests-gappy`) the
 safeguards' `rate` translation, which cannot express Prometheus'
 extrapolation, changes decisions at 11 of 13 sweep points; its smallest
-safe output is 8.45 bits per value against 2.92 (analytic) and 2.72
+safe output is 8.45 bits per value against 2.91 (analytic) and 2.74
 (optimistic).
 
 ## Results on real Prometheus data (H8)
@@ -193,11 +195,11 @@ node-/prometheus-mixin rules reduced to one series. Full tables:
   ones included, costs under 0.1 bits per value.
 - With θ recalibrated to the 95th percentile or the median of each rule's
   aggregate, the rule-aware codec is 6.5× / 4.0× below a uniform bound tuned
-  on the data on 7 days (1.13 / 1.49 bits per value) and 5.9× / 5.1× on 30
-  days (0.97 / 1.16).
+  on the data on 7 days (1.13 / 1.49 bits per value) and 6.0× / 5.1× on 30
+  days (0.96 / 1.15).
 - Against Compression Safeguards (SZ3+SG, best mismatch-free point of its
   sweep), the optimistic budget (κ = 1024) is smaller on 19 of 26 datasets
-  in both snapshots (geometric mean of the ratio 0.61 on 7 days, 0.43 on
+  in both snapshots (geometric mean of the ratio 0.60 on 7 days, 0.42 on
   30 days). SG remains smaller on dense counters under `rate`
   (`prometheus_samples_appended`, `node_cpu0_idle`, `demo_api_foo_200`).
   SG's `rate` translation changed decisions at some sweep points on 4 of

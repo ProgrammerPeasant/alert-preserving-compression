@@ -314,7 +314,7 @@ fn best_of<T>(runs: usize, mut f: impl FnMut() -> T) -> (f64, T) {
 
 fn h3(days: f64) {
     println!("\n## H3: single-core throughput (MB/s of raw float64 input, best of 5)\n");
-    println!("| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (fixed) | decode (fixed) | encode (lossless) | end-to-end `compress` | `compress`, no scale search |");
+    println!("| dataset | samples | budget (naive) | budget | encode (rule-aware) | decode | encode (fixed) | decode (fixed) | encode (lossless) | end-to-end `compress` | `compress` + scale search |");
     println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for ds in [gen::cpu(1, days, 0.8, 1.5), gen::requests(4, days)] {
         let s = &ds.series;
@@ -348,7 +348,7 @@ fn h3(days: f64) {
         let (t_ll, _) = best_of(5, || encode(&s.vals, &zeros, plan.mode));
         let (t_all, _) = best_of(5, || compress(s, &ds.rules, &g));
         let one = Options {
-            scales: &[1.0],
+            scales: alertsafe_codec::SCALES,
             ..Default::default()
         };
         let (t_one, _) = best_of(5, || compress_with(s, &ds.rules, &g, one));

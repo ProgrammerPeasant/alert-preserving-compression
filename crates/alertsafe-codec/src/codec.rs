@@ -28,7 +28,7 @@ pub const BLOCK: usize = 128;
 const E_MIN: i32 = -126;
 const E_MAX: i32 = 126;
 /// Finer grids tried below every budget's own exponent ([`candidate_exponents`]).
-const FINER_STEPS: i32 = 2;
+const FINER_STEPS: i32 = 3;
 /// Largest step count coded in a lossy block; beyond it the sample escapes.
 const K_MAX: f64 = (1u64 << 50) as f64;
 
@@ -524,7 +524,9 @@ fn candidate_exponents(xs: &[f64], eps: Bounds, y_prev: f64, mode: Mode) -> Vec<
     // A finer step is admissible wherever a coarser one is, and the cost is
     // not monotone in the step: on a counter whose increments are a fraction
     // of the budget, halving `q` can halve the rate. The exact block cost
-    // decides, so also offer the next FINER_STEPS finer grids.
+    // decides, so also offer the next FINER_STEPS finer grids. Three cover
+    // the budget scales ×½, ×¼, ×⅛ that `Options::scales` used to try (with
+    // two, a never-firing `rate` rule lost 0.32 bits per value without them).
     let coarse = es.clone();
     for e in coarse {
         es.extend((1..=FINER_STEPS).map(|d| (e - d).max(E_MIN)));

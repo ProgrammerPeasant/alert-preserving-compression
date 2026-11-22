@@ -6,7 +6,7 @@
 //!
 //! * box vs one-sided budget (Corollary 1, Proposition 1(e)),
 //! * nearest-only vs adaptive (lazy) step choice,
-//! * scale search ([`Options::scales`]),
+//! * scale search ([`Options::scales`], off in the full codec),
 //! * optimistic budget with repair ([`Options::slack`]),
 //! * entropy vs fixed-width residual coding (on the full analytic plan).
 //!
@@ -14,7 +14,7 @@
 
 use std::thread;
 
-use alertsafe_codec::{alert_diff, compress_with, encode_bounds, Coding, Options, Steps};
+use alertsafe_codec::{alert_diff, compress_with, encode_bounds, Coding, Options, Steps, SCALES};
 
 use crate::gen::Dataset;
 use crate::relax::RELAX_KAPPA;
@@ -26,13 +26,12 @@ struct Config {
 }
 
 fn configs() -> Vec<Config> {
+    let full = Options::default();
     let base = Options {
         one_sided: false,
         steps: Steps::Nearest,
-        scales: &[1.0],
-        ..Default::default()
+        ..full
     };
-    let full = Options::default();
     vec![
         Config {
             name: "box, nearest (Thm 1)",
@@ -46,15 +45,7 @@ fn configs() -> Vec<Config> {
             },
         },
         Config {
-            name: "+ lazy steps",
-            opts: Options {
-                one_sided: true,
-                steps: Steps::Adaptive,
-                ..base
-            },
-        },
-        Config {
-            name: "+ scale search (= rule-aware)",
+            name: "+ lazy steps (= rule-aware)",
             opts: full,
         },
         Config {
@@ -65,9 +56,16 @@ fn configs() -> Vec<Config> {
             },
         },
         Config {
+            name: "rule-aware + scale search",
+            opts: Options {
+                scales: SCALES,
+                ..full
+            },
+        },
+        Config {
             name: "box, nearest + scale search",
             opts: Options {
-                scales: full.scales,
+                scales: SCALES,
                 ..base
             },
         },
@@ -173,7 +171,7 @@ fn table(sets: &[Dataset], cfgs: &[Config], rows: &[Vec<f64>]) {
 }
 
 /// Mean bits per value and geometric mean of the ratio to the full analytic
-/// codec (`+ scale search`, index 3), per group of datasets.
+/// codec (`+ lazy steps`, index 2), per group of datasets.
 fn summary(groups: &[(&str, Vec<&Vec<f64>>)], cfgs: &[Config]) {
     let mut head = vec!["configuration".to_string()];
     for (g, r) in groups {
@@ -190,7 +188,7 @@ fn summary(groups: &[(&str, Vec<&Vec<f64>>)], cfgs: &[Config]) {
         let mut cells = Vec::new();
         for (_, rs) in groups {
             let mean = rs.iter().map(|r| r[j]).sum::<f64>() / rs.len() as f64;
-            let ratio = geomean(rs.iter().map(|r| r[j].max(1e-3) / r[3].max(1e-3)));
+            let ratio = geomean(rs.iter().map(|r| r[j].max(1e-3) / r[2].max(1e-3)));
             cells.push(format!("{mean:.2}"));
             cells.push(format!("{ratio:.2}"));
         }
@@ -244,15 +242,15 @@ pub fn ablation(days: f64, real: Option<&std::path::Path>, jobs: usize) {
     let all: Vec<&Vec<f64>> = groups.iter().flat_map(|(_, r)| r.iter().copied()).collect();
     let gains: Vec<f64> = all
         .iter()
-        .map(|r| r[2] - r[3])
+        .map(|r| r[2] - r[4])
         .filter(|&d| d > 0.0)
         .collect();
     println!(
-        "\nScale search (`+ scale search` vs `+ lazy steps`) is smaller on {} of {} datasets, by at most {:.4} bits per value.",
+        "\nScale search (`rule-aware + scale search` vs `rule-aware`) is smaller on {} of {} datasets, by at most {:.4} bits per value.",
         gains.len(),
         all.len(),
         gains.iter().copied().fold(0.0, f64::max)
     );
-    println!("\nSummary: mean bits per value and geometric mean of the ratio to `rule-aware` (+ scale search):\n");
+    println!("\nSummary: mean bits per value and geometric mean of the ratio to `rule-aware` (+ lazy steps):\n");
     summary(&groups, &cfgs);
 }

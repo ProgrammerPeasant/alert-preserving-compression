@@ -52,7 +52,11 @@ pub struct Options {
     /// smallest output wins. Any budget below the analytic one is sound, and
     /// the coded size is not monotone in the budget (the quantizer steps are
     /// powers of two, and on discrete data a finer step can be cheaper), so
-    /// the encoder tries a few. `&[1.0]` disables the search.
+    /// the encoder can try a few ([`SCALES`]). The default `&[1.0]` codes
+    /// the analytic budget only: the encoder already offers three finer
+    /// grids per block (`FINER_STEPS`), which cover ×½, ×¼ and ×⅛, so the
+    /// search no longer changes the size and only costs 3–4x in speed
+    /// (`docs/ablation.md`).
     pub scales: &'static [f64],
     /// Step choice of the quantizer ([`Steps::Adaptive`] by default).
     pub steps: Steps,
@@ -62,7 +66,7 @@ pub struct Options {
     pub one_sided: bool,
 }
 
-/// Default [`Options::scales`].
+/// Budget scale search for [`Options::scales`] (off by default).
 pub const SCALES: &[f64] = &[1.0, 0.5, 0.25, 0.125];
 
 impl Default for Options {
@@ -71,7 +75,7 @@ impl Default for Options {
             chunk: usize::MAX,
             max_error: f64::INFINITY,
             slack: 1.0,
-            scales: SCALES,
+            scales: &[1.0],
             steps: Steps::Adaptive,
             one_sided: true,
         }
