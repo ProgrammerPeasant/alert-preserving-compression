@@ -1,13 +1,14 @@
 \section{Introduction}
 \label{sec:intro}
 
-Monitoring systems such as Prometheus~\cite{prometheus} store millions of
-floating-point time series, and most of the stored bytes are never read by a
-human. They are read by alerting rules: threshold tests over windowed
+Monitoring systems such as Prometheus~\cite{prometheus} store large
+volumes of floating-point time series (metrics), and most of the stored
+bytes are never read by a human. They are read by alerting rules: threshold tests over windowed
 aggregates such as \code{avg\_over\_time(x[5m]) > 0.8 for 10m} or
 \code{rate(requests[5m]) < 20}. Lossless time-series compressors in the
 Gorilla family~\cite{pelkonen2015gorilla} spend 20--55 bits per value on
-typical gauges, and error-bounded lossy compressors such as
+typical gauges (metrics such as load or memory use, which move up and down;
+\cref{def:kinds}), and error-bounded lossy compressors such as
 SZ3~\cite{liang2023sz3} trade a uniform pointwise bound $\eps$ for size. A
 uniform bound is the wrong currency for alerting: far from a threshold almost
 any error is harmless, while near a threshold an error smaller than the

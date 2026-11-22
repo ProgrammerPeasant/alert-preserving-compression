@@ -3,7 +3,7 @@
 `tectonic main.tex` (fetches packages on demand) or `latexmk -pdf main.tex`
 (TeX Live: amsmath, cleveref, hyperref, booktabs, graphicx, microtype,
 lmodern; bibliography style `plainurl`). Compiles cleanly with tectonic
-(2026-11-22: 14 pages, no overfull boxes, no BibTeX warnings).
+(2026-11-22: 15 pages, no overfull boxes, no BibTeX warnings).
 
 arXiv source tarball (sources, figure PDFs, prebuilt `main.bbl`):
 `scripts/arxiv.sh [OUT.tar.gz]`.

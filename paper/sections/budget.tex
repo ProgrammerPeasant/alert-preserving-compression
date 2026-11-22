@@ -87,8 +87,10 @@ decision is unchanged.}
 \end{figure}
 
 \subsection{Counters and \code{rate}}
+\label{sec:budget-rate}
 
-Prometheus' \code{rate} over a window with first value $x_f$, last value
+Prometheus' \code{rate} (\code{extrapolatedRate} in
+\code{promql/functions.go}~\cite{promsrc}) over a window with first value $x_f$, last value
 $x_l$, reset correction $\rho = \sum_{x_i < x_{i-1}} x_{i-1}$ and increase
 $\Delta = x_l - x_f + \rho$ extrapolates $\Delta$ towards the window
 boundaries, but not below zero:

@@ -1,70 +1,235 @@
 \section{Model and correctness criterion}
 \label{sec:model}
 
-\paragraph{Series.} A series is a finite sequence $X = ((s_i, x_i))_{i=1}^{n}$
-with strictly increasing timestamps $s_i \in \mathbb{Z}$ (ms) and values
-$x_i \in \mathbb{R}$. A value-only compressor keeps the timestamps and
-returns $Y = ((s_i, y_i))$; the pointwise error is $e_i = y_i - x_i$.
-Timestamps are compressed losslessly by existing delta-of-delta schemes and
-are out of scope.
+This section fixes the mathematical objects (series, compressors, rules,
+alert states) and the correctness criterion. Each object is first defined
+abstractly; its counterpart in Prometheus is given separately
+(\cref{tab:promql}), so that the definitions can be read without knowing
+PromQL.
 
-\paragraph{Rules.} A threshold rule is $R = (F, w, \bowtie, \theta, h, k)$:
-an aggregate $F$, a range $w$, a comparison $\bowtie \in \{>, \ge, <, \le\}$,
-a threshold $\theta$, a hold duration $h$ (\code{for}) and $k$
-(\code{keep\_firing\_for}). It is the PromQL alert
-\code{expr: F(x[w]) $\bowtie$ $\theta$} over one series. At evaluation time
-$t$ the aggregate reads the samples with index in the support
-$S_R(t) = \{ i : t - w < s_i \le t \}$ (range selectors are left-open in
-Prometheus~3); for an instant selector (\code{last}) the support is the last
-sample in $(t - \lambda, t]$ with lookback $\lambda = 5$\,min. The aggregate is
-$f_R(X)(t) = F((x_i)_{i \in S_R(t)})$ and the condition is
-$c_R(X)(t) = [S_R(t) \ne \emptyset \wedge f_R(X)(t) \bowtie \theta]$.
+\subsection{Series and compressors}
 
-\paragraph{Decisions.} For an evaluation grid $T = (t_1 < t_2 < \dots)$ the
-alert state trajectory $D_R(X) \in \{\mathsf{Inactive}, \mathsf{Pending},
-\mathsf{Firing}\}^{|T|}$ is the run of the deterministic automaton
-$M_{h,k}$ of Prometheus' \code{rules/alerting.go} on the condition sequence:
-a true condition moves \textsf{Inactive} to \textsf{Pending}, and
-\textsf{Pending} to \textsf{Firing} once it has held for $h$; a false
-condition resets to \textsf{Inactive}, except that \textsf{Firing} persists
-for $k$ after the condition was last true.
-
-\begin{definition}[Decision preservation]
-A compressor $C$ is \emph{decision-preserving} for a rule set $\R$ on $X$
-over grid $T$ if $D_R(X) = D_R(C(X))$ for all $R \in \R$. It is
-\emph{phase-robust} if this holds for every grid $T$.
+\begin{definition}[Series]
+\label{def:series}
+A \emph{series} of length $n$ is a finite sequence of samples
+$X = ((s_i, x_i))_{i=1}^{n}$, where $s_i \in \mathbb{Z}$ is the timestamp
+of sample $i$ in milliseconds, $s_1 < s_2 < \dots < s_n$, and
+$x_i \in \mathbb{R}$ is its value. We write $I = \{1, \dots, n\}$ for the
+index set.
 \end{definition}
 
-The criterion counts \textsf{Pending} periods as well as firings, so it is
-stricter than ``the same alerts fire''. Relaxations (firing times within
-$\delta$, firings only) admit larger budgets and are left for future work
+\begin{definition}[Value-only compressor]
+\label{def:compressor}
+A \emph{compressor} is a pair of maps: an encoder that turns a series into
+a bit string and a decoder that turns the bit string back into a series. It
+is \emph{value-only} if the decoded series has the same timestamps,
+$Y = ((s_i, y_i))_{i=1}^{n}$; only the values may change. We write
+$C(X) = Y$ for the composition of encoder and decoder and
+$e_i = y_i - x_i$ for the pointwise error. $C$ is \emph{lossless} on $X$ if
+$e_i = 0$ for all $i \in I$.
+\end{definition}
+
+Timestamps are compressed losslessly by existing delta-of-delta
+schemes~\cite{pelkonen2015gorilla} and are out of scope; every compressor in
+this paper is value-only.
+
+Monitoring systems distinguish metric types by how their values may evolve.
+Prometheus has gauges, counters, histograms and summaries; the classic
+forms of the last two are stored as groups of gauge and counter
+series~\cite{prometheus}. The analysis needs only the two basic types.
+
+\begin{definition}[Gauges and counters]
+\label{def:kinds}
+A series $X$ is a \emph{gauge} if its values are arbitrary reals: they
+measure a current level that may go up and down (load average, memory in
+use, temperature). It is a \emph{counter} if its values are non-negative
+and count events cumulatively since the start of the monitored process
+(requests served, bytes sent), so that they never decrease except at a
+\emph{reset}, an index $i > 1$ with $x_i < x_{i-1}$, where the process
+restarted and the count began again from zero.
+\end{definition}
+
+The kind is metadata of the series (the \code{TYPE} line of the exposition
+format), not something inferred from the values. Counters are used through
+their rate of increase (the aggregate $\mathrm{rate}$ below), gauges
+through their level.
+
+\subsection{Alerting rules}
+
+\begin{definition}[Threshold rule]
+\label{def:rule}
+A \emph{threshold rule} is a tuple
+\[
+  R = (F,\ w,\ \bowtie,\ \theta,\ d_{\mathrm{hold}},\ d_{\mathrm{keep}}),
+\]
+whose components are:
+\begin{enumerate}
+  \item $F$, the \emph{aggregate}: a function that maps a finite non-empty
+    sequence of samples to a real number. We consider
+    $F \in \{\mathrm{last}, \mathrm{avg}, \mathrm{sum}, \mathrm{min},
+    \mathrm{max}, \mathrm{rate}\}$. For values $v_1, \dots, v_m$,
+    $\mathrm{last} = v_m$, $\mathrm{avg} = \frac1m \sum_j v_j$,
+    $\mathrm{sum} = \sum_j v_j$, and $\mathrm{min}$, $\mathrm{max}$ are the
+    extrema; $\mathrm{rate}$ is the per-second increase of a counter, which
+    also depends on the timestamps (\cref{sec:budget-rate});
+  \item $w > 0$, the \emph{range}: the length of the time window the
+    aggregate reads, in milliseconds;
+  \item ${\bowtie} \in \{>, \ge, <, \le\}$, the \emph{comparison};
+  \item $\theta \in \mathbb{R}$, the \emph{threshold};
+  \item $d_{\mathrm{hold}} \ge 0$, the \emph{hold duration}: how long the
+    condition must stay true before the alert fires;
+  \item $d_{\mathrm{keep}} \ge 0$, the \emph{keep duration}: how long a
+    firing alert keeps firing after the condition has become false.
+\end{enumerate}
+\end{definition}
+
+For example, the Prometheus alerting rule
+\begin{center}
+\code{expr: avg\_over\_time(node\_load1[5m]) > 2}\qquad \code{for: 10m}
+\end{center}
+is the tuple $R = (\mathrm{avg},\ 5\,\mathrm{min},\ {>},\ 2,\
+10\,\mathrm{min},\ 0)$. \Cref{tab:promql} lists the correspondence for
+every component.
+
+\begin{table}[htbp]
+\centering
+\caption{Notation of \cref{sec:model} and its counterpart in a Prometheus
+alerting rule.}
+\smallskip
+\label{tab:promql}
+\begin{tabular}{@{}lll@{}}
+\toprule
+notation & Prometheus & meaning \\
+\midrule
+$X$ & one time series (a single label set) & the input \\
+gauge, counter & metric type (\code{\# TYPE} line) & kind of $X$ \\
+$F = \mathrm{last}$ & instant selector \code{x} & most recent sample \\
+$F \in \{\mathrm{avg}, \mathrm{sum}, \mathrm{min}, \mathrm{max}\}$
+  & \code{avg\_over\_time}, \code{sum\_over\_time}, \dots & window aggregate \\
+$F = \mathrm{rate}$ & \code{rate} & counter increase per second \\
+$w$ & range in \code{x[w]} & window length \\
+$\bowtie$, $\theta$ & comparison and constant in \code{expr} & threshold test \\
+$d_{\mathrm{hold}}$ & \code{for} & hold duration \\
+$d_{\mathrm{keep}}$ & \code{keep\_firing\_for} & keep duration \\
+$T$ & evaluation interval and phase & evaluation grid \\
+$\lambda$ & lookback delta (5\,min) & staleness limit of \code{last} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Evaluation.} Rules are evaluated at instants of an
+\emph{evaluation grid} $T = (t_1 < t_2 < \dots)$; in Prometheus the grid is
+fixed by the evaluation interval and an unknown phase. At an instant $t$ the
+rule reads the samples whose index lies in its \emph{support}
+\[
+  S_R(t) = \{\, i \in I : t - w < s_i \le t \,\}.
+\]
+The window is open on the left, as range selectors are in Prometheus~3. For
+$F = \mathrm{last}$ the expression has no range; the support is the single
+latest sample within the lookback delta, $S_R(t) = \{\max\{ i : t - \lambda <
+s_i \le t \}\}$ with $\lambda = 5$\,min, or $\emptyset$ if there is none.
+Given the support, the rule computes two quantities:
+\begin{itemize}
+  \item the \emph{aggregate value}
+    $f_R(X)(t) = F\bigl((s_i, x_i)_{i \in S_R(t)}\bigr)$, defined when
+    $S_R(t) \ne \emptyset$;
+  \item the \emph{condition}
+    $c_R(X)(t) = \bigl[\, S_R(t) \ne \emptyset \ \wedge\ f_R(X)(t) \bowtie
+    \theta \,\bigr] \in \{0, 1\}$.
+\end{itemize}
+An empty support makes the condition false, as Prometheus returns no sample
+then.
+
+\subsection{Alert states}
+
+The condition alone does not decide whether an alert fires: the hold and
+keep durations add memory. Prometheus implements this memory as a small
+state machine (\code{rules/alerting.go}~\cite{promsrc}); we restate it as an automaton.
+
+\begin{definition}[Alert automaton]
+\label{def:automaton}
+The automaton $M_R$ has states $Q = \{\mathsf{Inactive}, \mathsf{Pending},
+\mathsf{Firing}\}$ and two timers, the activation time $a$ and the keep
+start $b \in \mathbb{Z} \cup \{\bot\}$. It starts in $\mathsf{Inactive}$
+with $b = \bot$ and reads pairs $(t_j, c_j)$, where $c_j = c_R(X)(t_j)$. At
+each step $j = 1, 2, \dots$ it applies, in order:
+\begin{enumerate}
+  \item if $c_j = 1$: set $b \gets \bot$; if the state is $\mathsf{Inactive}$,
+    move to $\mathsf{Pending}$ and set $a \gets t_j$;
+  \item if $c_j = 0$: if the state is $\mathsf{Firing}$ and
+    $d_{\mathrm{keep}} > 0$, set $b \gets t_j$ when $b = \bot$, and stay in
+    $\mathsf{Firing}$ while $t_j - b < d_{\mathrm{keep}}$; otherwise move to
+    $\mathsf{Inactive}$ and set $b \gets \bot$;
+  \item if the state is $\mathsf{Pending}$ and
+    $t_j - a \ge d_{\mathrm{hold}}$, move to $\mathsf{Firing}$.
+\end{enumerate}
+The state after step $j$ is $q_j$. The \emph{alert state trajectory} of $R$
+on $X$ over $T$ is $D_R(X) = (q_1, q_2, \dots) \in Q^{|T|}$.
+\end{definition}
+
+With $d_{\mathrm{hold}} = 0$ step~3 fires on the first true condition, so
+$\mathsf{Pending}$ is never observed; with $d_{\mathrm{keep}} = 0$ a false
+condition always resets the alert.
+
+\subsection{Correctness criterion}
+
+\begin{definition}[Decision preservation]
+\label{def:preservation}
+Let $\R$ be a finite set of rules. A compressor $C$ is
+\emph{decision-preserving} for $\R$ on $X$ over a grid $T$ if
+$D_R(C(X)) = D_R(X)$ for every $R \in \R$. It is \emph{phase-robust} if it
+is decision-preserving over every grid $T$.
+\end{definition}
+
+The criterion compares whole trajectories, so it counts
+$\mathsf{Pending}$ periods as well as firings and is stricter than ``the
+same alerts fire''. Relaxations (firing times within $\delta$, firings only)
+admit larger budgets and are left for future work
 (\cref{sec:conclusion}).
+
+The two lemmas below reduce decision preservation to preserving the
+condition at finitely many instants.
 
 \begin{lemma}[Automaton]
 \label{lem:automaton}
 If $c_R(X)(t) = c_R(Y)(t)$ for all $t \in T$, then $D_R(X) = D_R(Y)$.
 \end{lemma}
 \begin{proof}
-$M_{h,k}$ reads only $T$ and the condition sequence.
+$M_R$ reads only the instants $t_j$ and the conditions $c_j$, which coincide
+for $X$ and $Y$; its transitions are deterministic.
 \end{proof}
 
 \begin{lemma}[Phase robustness]
 \label{lem:phase}
-Let $F$ depend on $t$ only through $S_R(t)$ (true for \code{last} and
-\code{avg/sum/min/max\_over\_time}) and let
-$E = \{s_i\} \cup \{s_i + w\}$ ($s_i + \lambda$ for \code{last}). Then
-$S_R(t)$, hence $c_R(X)(t)$, is constant between consecutive points of $E$
-and empty before the first.
+Let $F \ne \mathrm{rate}$, so that $f_R(X)(t)$ depends on $t$ only through
+the support $S_R(t)$. Let
+$E_R = \{s_i : i \in I\} \cup \{s_i + w : i \in I\}$ (with $\lambda$ in
+place of $w$ for $F = \mathrm{last}$). Then $S_R(t)$, and hence $c_R(X)(t)$
+and $c_R(Y)(t)$, is constant on every interval between consecutive points
+of $E_R$, and $S_R(t) = \emptyset$ before the first point.
 \end{lemma}
 \begin{proof}
-$i \in S_R(t) \iff s_i \le t < s_i + w$, so membership changes only at
-$s_i$ or $s_i + w$.
+By definition $i \in S_R(t) \iff s_i \le t < s_i + w$, so the membership of
+$i$ changes only at $t = s_i$ or $t = s_i + w$. For $\mathrm{last}$ the
+support is the largest index in the same kind of window with $\lambda$
+in place of $w$, which changes only at the same kind of points.
 \end{proof}
 
-By \cref{lem:automaton,lem:phase}, preserving the conditions at the
-\emph{protected instants} $P_R = E$ preserves the trajectories on every grid,
-for any evaluation interval and phase, and $|E| \le 2n$. The encoder needs
-the rule's range $w$, not the scrape interval or the number of samples per
-window, so missed scrapes and irregular timestamps are covered. \code{rate}
-depends on $t$ continuously through extrapolation and is protected on the
-deployed grid $T$ only.
+Call the points of $P_R = E_R$ the \emph{protected instants} of $R$; there
+are at most $2n$ of them. By \cref{lem:phase}, every instant $t$ has the
+same condition as some protected instant (the last one not after $t$), for
+both $X$ and $Y$. With \cref{lem:automaton} this gives:
+
+\begin{corollary}
+\label{cor:protected}
+If $c_R(C(X))(t) = c_R(X)(t)$ for every $R \in \R$ with
+$F \ne \mathrm{rate}$ and every $t \in P_R$, then $C$ is phase-robust for
+these rules.
+\end{corollary}
+
+The encoder therefore needs the rule's range $w$, but not the evaluation
+interval, the phase, the scrape interval or the number of samples per
+window, so missed scrapes and irregular timestamps are covered. The
+$\mathrm{rate}$ aggregate depends on $t$ continuously through its
+extrapolation to the window edges (\cref{sec:budget-rate}); for it the
+conditions are preserved on the deployed grid $T$ only, $P_R = T$.
