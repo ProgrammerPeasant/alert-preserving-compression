@@ -1,6 +1,7 @@
 # Kani proofs: running on a compute server
 
-Requirements: Linux x86_64, `bash`, `curl`, a C toolchain (`cc`), internet
+Requirements: Linux x86_64 or macOS (Intel/Apple Silicon), `bash`, `curl`, `perl`,
+a C toolchain (`cc`; macOS: `xcode-select --install`), internet
 access on the first run, ~5 GB of disk. Nothing is installed outside this
 directory (`.kani-env/`). Each floating-point harness can take 20 min to
 several hours and several GB of RAM; the script runs `RAM / 8 GB` harnesses

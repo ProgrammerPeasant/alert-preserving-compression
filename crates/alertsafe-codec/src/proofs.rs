@@ -20,7 +20,7 @@ use alertsafe_rules::{Agg, Cmp, Rule};
 
 use crate::bits::{BitReader, BitWriter};
 use crate::budget::{lipschitz_tolerance, tolerance};
-use crate::codec::{get_varint, put_varint, quantize, unzigzag, zigzag, Mode};
+use crate::codec::{get_varint, put_varint, quantize_step, unzigzag, zigzag, Mode};
 use crate::rc::{Models, RcDecoder, RcEncoder, Sink, Source};
 
 /// One evaluation at the last of `N` samples 1 s apart, window covering all.
@@ -296,19 +296,24 @@ fn tolerance_of_extremum_min_over_time() {
     tolerance_of_extremum::<3>(Agg::MinOverTime);
 }
 
-#[kani::proof]
-fn quantize_matches_decoder_and_budget() {
-    let (x, down, up, y_prev, floor): (f64, f64, f64, f64, f64) = kani::any();
-    let pref: Option<i64> = if kani::any() { Some(kani::any()) } else { None };
+/// The quantizer's output is what the decoder reconstructs and respects the
+/// budget. `quantize` returns only results of [`quantize_step`] (its
+/// candidate counts: rounding, the clamped preference and one step inwards),
+/// so the invariants are proved for `quantize_step` with an arbitrary
+/// candidate `k` under the guards `quantize` checks first; a harness over
+/// `quantize` itself, with the `pref` search, does not finish in 6 hours.
+fn quantize_step_invariants(mode: Mode) {
+    let (x, down, up, y_prev, floor, k): (f64, f64, f64, f64, f64, f64) = kani::any();
     let e: i32 = kani::any();
     kani::assume((-60..=60).contains(&e));
     let q = 2f64.powi(e);
-    let mode = if kani::any() {
-        Mode::Gauge
-    } else {
-        Mode::Counter
-    };
-    if let Some((k, y)) = quantize(x, down, up, y_prev, floor, q, mode, pref) {
+    // What `quantize` establishes before calling `quantize_step`.
+    kani::assume(x.is_finite() && y_prev.is_finite() && !down.is_nan() && !up.is_nan());
+    kani::assume(down > 0.0 || up > 0.0);
+    if mode == Mode::Counter {
+        kani::assume(up == 0.0);
+    }
+    if let Some((k, y)) = quantize_step(x, down, up, y_prev, floor, q, mode, k) {
         // The decoder's reconstruction (`decode_*`), compared bitwise: a
         // differing sign of zero desynchronizes the XOR reference.
         assert_eq!((y_prev + k as f64 * q).to_bits(), y.to_bits());
@@ -322,6 +327,16 @@ fn quantize_matches_decoder_and_budget() {
             }
         }
     }
+}
+
+#[kani::proof]
+fn quantize_step_gauge() {
+    quantize_step_invariants(Mode::Gauge);
+}
+
+#[kani::proof]
+fn quantize_step_counter() {
+    quantize_step_invariants(Mode::Counter);
 }
 
 #[kani::proof]

@@ -6,7 +6,9 @@ margins, tolerances and aggregates in IEEE-754 double precision. We check the
 floating-point implementation with Kani~\cite{vanhattum2022kani}, a bounded
 model checker for Rust built on CBMC~\cite{kroening2014cbmc}, which encodes
 floating-point operations bit-precisely. Harnesses quantify over all finite
-inputs (and, where stated, NaN and infinities) of a fixed shape.
+inputs (and, where stated, NaN and infinities) of a fixed shape. Times below are wall-clock
+for Kani~0.68 (CBMC with CaDiCaL) on a 24-core x86-64 machine running 12
+harnesses concurrently.
 
 A monolithic harness for ``budget implies same condition'' over a window of
 three samples does not finish in 6 hours for any aggregate: symbolic
@@ -20,21 +22,26 @@ from the window structure:
   \item[(A)] \emph{scalar tolerance}, one harness per comparison: if
     $\mathrm{fl}|y' - v| \le \tau(v)$, where $\tau$ is the implemented
     tolerance function, then $y'$ and $v$ are on the same side of $\theta$
-    (31--39 min each);
+    (56--69 min each);
   \item[(B)] \emph{window lemmas} on at most four variables: the extremum is
     attained by some sample; $\mathrm{fl}|y_j - x_k| \le
     \max(\mathrm{fl}|y_j - x_j|, \mathrm{fl}|y_k - x_k|)$ for the arg-extrema
-    $j, k$ (99 and 116 min); rounded subtraction is monotone (65 min);
+    $j, k$ (198 and 226 min); rounded subtraction is monotone (130 min);
   \item[(C)] the implemented tolerance of a window equals
-    $\tau(f(x))$ bitwise ($\le 1$ min), and the aggregates are monotone
-    (\cref{cor:onesided}; 1--2 s).
+    $\tau(f(x))$ bitwise ($\le 3$ min), and the aggregates are monotone
+    (\cref{cor:onesided}; $\le 8$ s).
 \end{enumerate}
 (A)--(C) compose to the floating-point version of \cref{thm:budget} for
 these aggregates, for every window length. In addition, the decoder's
 reconstruction is proved bit-identical to the encoder's for every block
 parameter, including $-0.0$, together with the gauge and counter
-invariants of the quantizer; zigzag and varint codes and the bit-level
-specification of the bit I/O round-trip.
+invariants of the quantizer. The quantizer tries several candidate step
+counts (rounding, the admissible count of the lazy choice, one step
+inwards) and returns only candidates accepted by a single acceptance
+check; we prove the invariants for that check with an arbitrary candidate
+(7 and 15 min, run separately on a 16-core machine), since a harness over
+the full candidate search does not finish in 6 hours. Finally, the zigzag and varint codes and the
+bit-level specification of the bit I/O are proved to round-trip.
 
 \paragraph{Not yet proved.} \code{sum/avg\_over\_time} need a rounded-sum
 error lemma in place of (B); the range coder and the concrete bit writer
@@ -43,5 +50,4 @@ a loop bound depending on a symbolic counter). These parts are covered by
 property tests: round-trip tests of both formats with NaN, infinite and zero
 budgets and counters, and $5 \times 2000$ randomised decision-preservation
 cases cross-checked against a per-instant reference evaluator; a mutation
-(budget $\times 3$) is caught. \todo{re-run \code{quantize\_matches\_decoder\_and\_budget}
-after the one-sided change (harness updated, run time not recorded).}
+(budget $\times 3$) is caught.

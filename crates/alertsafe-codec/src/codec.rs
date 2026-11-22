@@ -649,24 +649,7 @@ pub(crate) fn quantize(
         Mode::Gauge => r.round(),
         Mode::Counter => r.floor(),
     };
-    let check = |k: f64| -> Option<(i64, f64)> {
-        if k.is_nan() || k.abs() > K_MAX || (mode == Mode::Counter && k < 0.0) {
-            return None;
-        }
-        // Reconstruct from the integer the decoder sees: `k` may be `-0.0`,
-        // and `-0.0 + -0.0 * q` keeps the sign the decoder's `-0.0 + 0.0`
-        // drops, which would desynchronize the XOR reference of a following
-        // block.
-        let k = k as i64;
-        let y = y_prev + k as f64 * q;
-        let within = if y >= x { y - x <= up } else { x - y <= down };
-        let ok = within
-            && match mode {
-                Mode::Gauge => true,
-                Mode::Counter => y <= x && y >= y_prev && (floor.is_nan() || y >= floor),
-            };
-        ok.then_some((k, y))
-    };
+    let check = |k: f64| quantize_step(x, down, up, y_prev, floor, q, mode, k);
     if let Some(p) = pref {
         // Admissible counts, up to rounding of the bounds (checked anyway).
         let lo = ((x - down - y_prev) / q).ceil();
@@ -681,6 +664,38 @@ pub(crate) fn quantize(
         }
     }
     check(nearest)
+}
+
+/// One candidate count `k` of [`quantize`], which returns only results of
+/// this function. `up` is already `0` for counters. Kani proves its output
+/// invariants for every `k` (`proofs::quantize_step_*`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn quantize_step(
+    x: f64,
+    down: f64,
+    up: f64,
+    y_prev: f64,
+    floor: f64,
+    q: f64,
+    mode: Mode,
+    k: f64,
+) -> Option<(i64, f64)> {
+    if k.is_nan() || k.abs() > K_MAX || (mode == Mode::Counter && k < 0.0) {
+        return None;
+    }
+    // Reconstruct from the integer the decoder sees: `k` may be `-0.0`,
+    // and `-0.0 + -0.0 * q` keeps the sign the decoder's `-0.0 + 0.0`
+    // drops, which would desynchronize the XOR reference of a following
+    // block.
+    let k = k as i64;
+    let y = y_prev + k as f64 * q;
+    let within = if y >= x { y - x <= up } else { x - y <= down };
+    let ok = within
+        && match mode {
+            Mode::Gauge => true,
+            Mode::Counter => y <= x && y >= y_prev && (floor.is_nan() || y >= floor),
+        };
+    ok.then_some((k, y))
 }
 
 pub(crate) fn zigzag(v: i64) -> u64 {
