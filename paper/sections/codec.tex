@@ -2,42 +2,60 @@
 \label{sec:codec}
 
 The codec turns per-sample bounds $(\delta^-_i, \delta^+_i)$ into a
-bit stream whose decoded values satisfy
-$x_i - \delta^-_i \le y_i \le x_i + \delta^+_i$. A budget of zero (or NaN)
+bit stream whose decoded values lie in the \emph{admissible interval}
+\[
+  A_i = [\,x_i - \delta^-_i,\ x_i + \delta^+_i\,].
+\] A budget of zero (or NaN)
 forces an exact sample; $+\infty$ leaves it unconstrained. The format does
 not depend on the rules: the decoder sees only the stream.
 
+\paragraph{Quantizer.} The lossy mode is closed-loop DPCM (differential
+pulse-code modulation) on a grid of step $q = 2^e$. The prediction for
+sample $i$ is the previous \emph{reconstruction}, $p_i = y_{i-1}$, not the
+previous original value, so encoder and decoder predict identically and
+errors do not accumulate. The reconstruction is $y_i = p_i + k_i q$ with
+an integer \emph{step count} $k_i$, chosen from the admissible counts
+\[
+  K_i = \{\, k \in \mathbb{Z} : p_i + kq \in A_i \,\},
+\]
+which is non-empty whenever $q \le \delta^-_i + \delta^+_i$. The stream
+stores either $k_i$ or its delta $k_i - k_{i-1}$.
+
 \paragraph{Blocks.} The series is cut into blocks of 128 samples. For each
 block the encoder picks the cheapest of (i) lossless Gorilla XOR
-coding~\cite{pelkonen2015gorilla} and (ii) closed-loop DPCM on a grid
-$q = 2^e$, with prediction from the previous reconstruction and either the
-step counts or their deltas coded. For a gauge the candidate exponents are,
-per sample, the largest $e$ whose grid provably hits the admissible interval
-($2^e \le \delta^- + \delta^+$), plus the three next finer grids, because the
-coded size is not monotone in the step on discrete data. For a counter the
+coding~\cite{pelkonen2015gorilla} and (ii) the quantizer above with one
+exponent $e$ per block. The candidate exponents are, for each sample
+of the block, the largest $e$ with $2^e \le \delta^-_i + \delta^+_i$ (so
+that $K_i \ne \emptyset$; $2^e \le \delta^-_i$ for a counter), plus the three next finer grids, because the
+coded size is not monotone in the step on discrete data; samples whose
+interval the chosen grid may miss are escaped (below). For a counter the
 quantizer is the floor quantizer of \cref{prop:rate}(b), which keeps the
 reconstruction below the data and non-decreasing. A sample whose step count
-would exceed $2^{50}$, or whose reconstruction misses its interval in
-floating point, escapes to a raw 64-bit value. The encoder checks every
+would exceed $2^{50}$ in magnitude, or whose reconstruction misses $A_i$ in
+floating point, is \emph{escaped}: stored as a raw 64-bit value.
+The encoder checks every
 reconstructed value against its bounds, so the bound holds for the actual
 floating-point output, bit for bit as the decoder computes it.
 
-\paragraph{Lazy steps.} Rounding to the nearest grid point produces
-unbiased errors, which suits a symmetric bound but wastes an asymmetric one.
-For every grid the encoder also tries the \emph{lazy} choice: the admissible
-step count closest to zero (the prediction itself if it is admissible) or to
-the previous step count. With one-sided bounds the prediction stays
+\paragraph{Lazy steps.} The \emph{nearest} choice
+$k_i = \mathrm{round}((x_i - p_i)/q)$ produces unbiased errors, which suits
+a symmetric bound but wastes an asymmetric one. For every grid the encoder
+also tries the \emph{lazy} choice: the $k \in K_i$ closest to zero (so
+$y_i = p_i$ whenever the prediction is admissible) or closest to
+$k_{i-1}$. With one-sided bounds the prediction stays
 admissible for long runs, which the entropy coder turns into a few hundredths
-of a bit per sample. Four strategies (nearest/lazy $\times$ counts/deltas)
+of a bit per sample. Four strategies (nearest or lazy, coding counts or deltas)
 are compared per block by exact coded cost.
 
 \paragraph{Entropy coding.} Every block decision and residual is coded with
 an LZMA-style adaptive binary range coder~\cite{martin1979range} with 15-bit
-probabilities: a zero flag, a sign and a unary bit length under a context of
-the previous residual's magnitude, then the top mantissa bits. Model rates
+probabilities: each coded integer (step count or delta) is sent as a zero flag,
+a sign and its bit length in unary, modelled in a context given by the
+previous integer's magnitude, then its leading bit below the top one
+(modelled) and the remaining bits (raw). Model rates
 start fast and slow down with a count-based schedule, so short streams adapt
-quickly. A fixed-width variant (zigzag codes per block) is kept for the
-ablation.
+quickly. A fixed-width variant, storing each block's integers with the
+block's maximal bit length, is kept for the ablation.
 
 \paragraph{Chunks.} Prometheus cuts head chunks at 120 samples, and each must
 decode on its own. The series can be coded as independent streams with 3--4
@@ -52,7 +70,7 @@ On any evaluation that flipped, the budget on its support is zeroed and the
 series re-encoded. The loop terminates because an all-exact support reads the
 original values. For \code{sum/avg} the verifier (sliding sum), the
 reference evaluator (left-to-right) and Prometheus (Kahan) sum in different
-orders, which differ by at most $2\gamma_{n-1}\sum|y_i|$; the verifier
+orders, which differ by at most $2\gamma_{n-1}\sum|y_i|$ (\cref{sec:budget}); the verifier
 therefore accepts an evaluation only if it lies farther than that from
 $\theta$, or its support is bitwise exact. The analytic budget keeps twice
 this margin and has needed no repair on any dataset; the loop makes the

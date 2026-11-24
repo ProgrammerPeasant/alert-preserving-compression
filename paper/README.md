@@ -13,6 +13,8 @@ Every number comes from `docs/results.md`, `docs/results-real.md` and
 
 ## Open before submission
 
+- Preprint: Zenodo doi:10.5281/zenodo.24499732 (no arXiv endorser; new
+  versions go to the same Zenodo concept record).
 - Dataset snapshots: Zenodo doi:10.5281/zenodo.24442344 (archive built by
   `scripts/package_dataset.py OUT.tar.gz`). No `\todo` left.
 - `refs.bib` checked against Crossref/arXiv/DOI metadata (2026-11-22); read

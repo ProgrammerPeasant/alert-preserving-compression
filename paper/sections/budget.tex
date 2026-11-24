@@ -16,12 +16,30 @@ the minimum over every evaluation that reads it:
   \label{eq:budget}
 \end{equation}
 
-\begin{theorem}
+The condition is $f_R(X)(t) \bowtie \theta$ or its negation, so on the
+original data it is one of $f > \theta$, $f \ge \theta$, $f < \theta$,
+$f \le \theta$. Two properties of this inequality matter below.
+
+\begin{definition}[Tight, upper and lower evaluations]
+\label{def:tight}
+A protected evaluation $(R,t)$ is \emph{tight} if the inequality that holds
+on $X$ is strict, i.e.\ $c_R(X)(t) = 1$ with ${\bowtie} \in \{>,<\}$, or
+$c_R(X)(t) = 0$ with ${\bowtie} \in \{\ge,\le\}$. Then a reconstruction with
+$f_R(Y)(t) = \theta$ already flips the condition, so the error must stay
+strictly below the tolerance. It is \emph{upper} if $f_R(X)(t)$ lies on
+the side of $\theta$ that only a decrease of the aggregate can leave
+($c_R(X)(t) = 1$ with ${\bowtie} \in \{>,\ge\}$, or $c_R(X)(t) = 0$ with
+${\bowtie} \in \{<,\le\}$), and \emph{lower} otherwise.
+\end{definition}
+
+We call the set of reconstructions
+$\{Y : |y_i - x_i| \le \eps_i \text{ for all } i \in I\}$ the
+\emph{box budget}: it bounds every error symmetrically.
+
+\begin{theorem}[Box budget]
 \label{thm:budget}
-Call $(R,t)$ \emph{tight} if preserving $c_R(X)(t)$ needs a strict
-inequality ($c$ true with $\bowtie \in \{>,<\}$, or false with
-$\bowtie \in \{\ge,\le\}$). If $|y_i - x_i| \le \eps_i$ for all $i$, strictly
-on the supports of tight evaluations, then $c_R(Y)(t) = c_R(X)(t)$ for all
+If $|y_i - x_i| \le \eps_i$ for all $i$, strictly on the supports of tight
+evaluations, then $c_R(Y)(t) = c_R(X)(t)$ for all
 $R \in \R$ and $t \in P_R$, and hence $D_R(Y) = D_R(X)$ on every grid (on $T$
 for \code{rate}).
 \end{theorem}
@@ -45,17 +63,16 @@ guarantee for dashboards without weakening the alert guarantee.
 
 \subsection{One-sided budget}
 
-The box of \cref{thm:budget} is pessimistic: near a threshold a series
+The box budget of \cref{thm:budget} is pessimistic: near a threshold a series
 mostly lies on one side, and only errors towards $\theta$ can flip a
 decision.
 
 \begin{corollary}[One-sided budget]
 \label{cor:onesided}
-Call $(R,t)$ \emph{upper} if $f_R(X)(t)$ lies on the side of $\theta$ that
-only a decrease can leave ($c$ true with $\bowtie \in \{>,\ge\}$ or false with
-$\bowtie\in\{<,\le\}$), and \emph{lower} otherwise. Let $\delta^-_i$
-($\delta^+_i$) be the minimum of $\tau_R(t)$ over the upper (lower)
-evaluations whose support contains $i$. If
+Let $\delta^-_i$ (the \emph{downward} budget) be the minimum of
+$\tau_R(t)$ over the upper evaluations whose support contains $i$, and
+$\delta^+_i$ (the \emph{upward} budget) the same minimum over the lower
+ones, with $\min\emptyset = +\infty$ (\cref{def:tight}). If
 $-\delta^-_i \le y_i - x_i \le \delta^+_i$ for all $i$ (strict where
 tight), every protected condition is preserved.
 \end{corollary}
@@ -67,7 +84,7 @@ $|z_i - x_i| \le \delta^-_i \le \tau_R(t)$, so $z$ satisfies
 upper side. Lower evaluations are symmetric with $\max$.
 \end{proof}
 
-Since $\eps_i = \min(\delta^-_i, \delta^+_i)$, the box is contained in the
+Since $\eps_i = \min(\delta^-_i, \delta^+_i)$, the box budget is contained in the
 one-sided set, and the difference is large: a sample read only by upper
 evaluations may move up without limit (\cref{fig:budget}). The coder exploits it only if it can
 place reconstructions asymmetrically (\cref{sec:codec}); the ablation shows
@@ -89,15 +106,32 @@ decision is unchanged.}
 \subsection{Counters and \code{rate}}
 \label{sec:budget-rate}
 
-Prometheus' \code{rate} (\code{extrapolatedRate} in
-\code{promql/functions.go}~\cite{promsrc}) over a window with first value $x_f$, last value
-$x_l$, reset correction $\rho = \sum_{x_i < x_{i-1}} x_{i-1}$ and increase
-$\Delta = x_l - x_f + \rho$ extrapolates $\Delta$ towards the window
-boundaries, but not below zero:
-$\mathrm{rate} = \Delta (S + \min(d_s, d_z) + d_e)/(S W)$, where $S$ is the
-sampled interval, $W$ the range, $d_s, d_e$ timestamp-only extrapolation
-distances and $d_z = S x_f / \Delta$ the distance to the counter's zero
-point.
+We restate Prometheus' \code{rate} (\code{extrapolatedRate} in
+\code{promql/functions.go}~\cite{promsrc}) for one evaluation $(R,t)$ with
+$|S_R(t)| \ge 2$. Let $f$ and $l$ be the first and last indices of the
+support $S_R(t)$. The rule reads:
+\begin{itemize}
+  \item the \emph{increase}
+    $\Delta = x_l - x_f + \rho$, where
+    $\rho = \sum_{i \in S_R(t),\, i > f,\, x_i < x_{i-1}} x_{i-1}$ adds back
+    the value lost at every reset inside the window;
+  \item the \emph{sampled interval} $\sigma = s_l - s_f$, the time covered
+    by the samples;
+  \item the \emph{extrapolation distances} $h_{\mathrm{s}}$ and
+    $h_{\mathrm{e}}$ from the first and last sample to the window's start
+    $t - w$ and end $t$, each replaced by half the mean sample spacing
+    when it reaches $1.1$ times that spacing; they depend on timestamps
+    only;
+  \item the \emph{zero distance} $h_0 = \sigma x_f / \Delta$, the time
+    before $s_f$ at which a counter growing at the window's average speed
+    was zero (used only when $\Delta > 0$).
+\end{itemize}
+The increase is extrapolated to the window boundaries, but not past the
+counter's zero point, and divided by the range in seconds:
+\[
+  \mathrm{rate} = \frac{\Delta}{w}\cdot
+  \frac{\sigma + \min(h_{\mathrm{s}}, h_0) + h_{\mathrm{e}}}{\sigma}.
+\]
 
 \begin{proposition}
 \label{prop:rate}
@@ -111,7 +145,7 @@ $x_i \ge x_{i-1} \Rightarrow y_i \ge y_{i-1}$; keeping the two samples
 around each true reset exact preserves the reset set.
 (c) On the reset-preserving set, $\mathrm{rate}$ is Lipschitz in
 $(\Delta, x_f)$ away from $x_f = 0$, with constant
-$\approx (2 + r)/W$ for a densely sampled window with $r$ resets.
+$\approx (2 + r)/w$ for a densely sampled window with $r$ resets.
 (d) Under (b), $\Delta$ and $x_f$ read only the window's first and last
 samples and the preserved reset values, so the budget of a \code{rate}
 evaluation applies to the two ends of its window only.
@@ -136,8 +170,10 @@ an interval enclosure like \code{rate}.
 \subsection{Floating point and complexity}
 
 The budget is computed in floating point. The code subtracts a rounding
-slack from the margin (Higham's $\gamma_n$ bound for sums~\cite{higham2002accuracy})
-and uses the next representable value below the tolerance for strict
+slack from the margin: a floating-point sum of $n$ terms has error at most
+$\gamma_{n-1}\sum_i|v_i|$ with $\gamma_n = nu/(1 - nu)$ and unit roundoff
+$u = 2^{-53}$~\cite{higham2002accuracy}.
+The code also uses the next representable value below the tolerance for strict
 comparisons. Monotonicity holds bitwise for \code{last}, \code{min} and
 \code{max}; Prometheus sums with Kahan compensation, which is not monotone,
 so for \code{sum/avg} \cref{cor:onesided} goes through the error bound
