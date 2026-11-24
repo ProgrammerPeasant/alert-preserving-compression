@@ -1,11 +1,9 @@
 \section{Model and correctness criterion}
 \label{sec:model}
 
-This section fixes the mathematical objects (series, compressors, rules,
-alert states) and the correctness criterion. Each object is first defined
-abstractly; its counterpart in Prometheus is given separately
-(\cref{tab:promql}), so that the definitions can be read without knowing
-PromQL.
+We define series, compressors, rules and alert states, and then the
+correctness criterion. The definitions do not assume knowledge of PromQL;
+\cref{tab:promql} lists the Prometheus counterpart of each object.
 
 \subsection{Series and compressors}
 
@@ -36,7 +34,7 @@ this paper is value-only.
 Monitoring systems distinguish metric types by how their values may evolve.
 Prometheus has gauges, counters, histograms and summaries; the classic
 forms of the last two are stored as groups of gauge and counter
-series~\cite{prometheus}. The analysis needs only the two basic types.
+series~\cite{prometheus}, so two types suffice for our analysis.
 
 \begin{definition}[Gauges and counters]
 \label{def:kinds}
@@ -142,9 +140,9 @@ then.
 
 \subsection{Alert states}
 
-The condition alone does not decide whether an alert fires: the hold and
-keep durations add memory. Prometheus implements this memory as a small
-state machine (\code{rules/alerting.go}~\cite{promsrc}); we restate it as an automaton.
+Whether an alert fires also depends on the hold and keep durations, so the
+rule has to remember past conditions. Prometheus keeps this memory in a
+small state machine (\code{rules/alerting.go}~\cite{promsrc}); we restate it as an automaton.
 
 \begin{definition}[Alert automaton]
 \label{def:automaton}
@@ -181,9 +179,9 @@ $D_R(C(X)) = D_R(X)$ for every $R \in \R$. It is \emph{phase-robust} if it
 is decision-preserving over every grid $T$.
 \end{definition}
 
-The criterion compares whole trajectories, so it counts
-$\mathsf{Pending}$ periods as well as firings and is stricter than ``the
-same alerts fire''. Relaxations (firing times within $\delta$, firings only)
+The criterion compares whole trajectories. It therefore also requires
+the same $\mathsf{Pending}$ periods, which is stricter than requiring the
+same firings. Relaxations (firing times within $\delta$, firings only)
 admit larger budgets and are left for future work
 (\cref{sec:conclusion}).
 
@@ -227,9 +225,10 @@ $F \ne \mathrm{rate}$ and every $t \in P_R$, then $C$ is phase-robust for
 these rules.
 \end{corollary}
 
-The encoder therefore needs the rule's range $w$, but not the evaluation
-interval, the phase, the scrape interval or the number of samples per
-window, so missed scrapes and irregular timestamps are covered. The
+The encoder therefore needs the rule's range $w$. It does not need the
+evaluation interval, the phase, the scrape interval or the number of
+samples per window, so the guarantee also covers missed scrapes and
+irregular timestamps. The
 $\mathrm{rate}$ aggregate depends on $t$ continuously through its
 extrapolation to the window edges (\cref{sec:budget-rate}); for it the
 conditions are preserved on the deployed grid $T$ only, $P_R = T$.

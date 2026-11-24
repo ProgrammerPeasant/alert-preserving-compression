@@ -1,26 +1,30 @@
 \begin{abstract}
-Monitoring systems keep large volumes of floating-point time series whose
-main consumer is a set of alerting rules: threshold tests over windowed
-aggregates with hold durations. Lossy compressors with a uniform error
-bound either waste space far from thresholds or change alerts near them.
-We make the alert decisions the correctness criterion: the reconstruction
-must produce exactly the same alert state trajectory
-(\textsf{Inactive}/\textsf{Pending}/\textsf{Firing}) as the original for
-every rule, at every evaluation interval and phase. For PromQL threshold
-rules over \code{last}, \code{avg/sum/min/max\_over\_time} and \code{rate} we
-derive a sound per-sample error budget, computable in linear time, as the
-minimum over every window containing the sample of its margin to the
-threshold divided by a Lipschitz constant. Monotonicity of the aggregates
-splits the budget into independent downward and upward tolerances, and
-Prometheus' extrapolated \code{rate} under an order-preserving quantizer
-constrains only the window ends. A predictive range-coded codec with a lazy
-step choice exploits the asymmetric budget, and a verify-and-repair loop
-makes the guarantee end to end in floating point; parts of the
+Monitoring systems store large volumes of floating-point time series, and
+most of these data are read only by alerting rules: threshold tests on
+window aggregates with a hold duration. A lossy compressor with one error
+bound for all samples either wastes space far from the thresholds or
+changes alerts near them. We use the alert decisions as the correctness
+criterion. For every rule, the reconstructed series must produce the same
+sequence of alert states (\textsf{Inactive}, \textsf{Pending},
+\textsf{Firing}) as the original, at any evaluation interval and phase.
+For PromQL threshold rules over \code{last},
+\code{avg/sum/min/max\_over\_time} and \code{rate} we derive a sound error
+budget for each sample, computable in linear time. It is the smallest
+value, over all windows that contain the sample, of the window's distance
+to the threshold divided by a Lipschitz constant. Because the aggregates
+are monotone, the budget splits into separate bounds for downward and
+upward errors. For Prometheus' extrapolated \code{rate}, an
+order-preserving quantizer leaves only the first and last sample of each
+window constrained. Our codec combines predictive coding, a range coder and
+a \emph{lazy} step choice that keeps the prediction whenever the budget
+allows, which suits the asymmetric budget. After encoding, it decodes the
+output, re-evaluates every rule and repairs any changed decision, so the
+guarantee holds for the floating-point output. Parts of the
 floating-point argument are machine-checked with Kani. On 13 real series
 from the public Prometheus demo servers (7 and 30 days), the codec keeps
-every alert decision (9\,055 firings) and needs 1.0--1.5 bits per value, about
-4--6.5$\times$ less than a uniform bound tuned on the same data and
-smaller than Compression Safeguards over SZ3 on 19 of 26 rule variants. An
-ablation attributes a 2.4--2.5$\times$ reduction to the combination of
-one-sided budget and lazy steps.
+every alert decision (9\,055 firings) at 1.0--1.5 bits per value. This is
+4--6.5 times less than a uniform bound tuned on the same data and less
+than Compression Safeguards over SZ3 on 19 of 26 rule variants. In an
+ablation, the one-sided budget and the lazy step choice together reduce
+the size by a factor of 2.4--2.5.
 \end{abstract}

@@ -1,39 +1,43 @@
 \section{Limitations and future work}
 \label{sec:conclusion}
 
-\paragraph{Scope of the rules.} We handle one series per rule. Aggregations
-across series (\code{sum by}) couple the budgets of a group, which the
-encoder must then see together; ratios need an interval enclosure; equality
-tests and \code{topk} admit no positive budget at their decision points.
+\paragraph{Scope of the rules.} We handle rules that read one series.
+Aggregations across series (\code{sum by}) couple the budgets of all
+series in a group, so the encoder would have to see the group together.
+Ratios need an interval enclosure, and equality tests and \code{topk}
+admit no positive budget at their decision points.
 
-\paragraph{Known rules.} The budget is computed for a fixed rule set. A rule
-added later sees a reconstruction that was optimised for other rules, with
-only the optional pointwise cap as a guarantee. Re-compressing from the
-original is possible while it is retained (e.g.\ before compaction).
+\paragraph{Known rules.} The budget is computed for a fixed rule set. A
+rule added later reads a reconstruction that was optimised for other
+rules, and only the optional pointwise cap bounds its error. The series
+can be compressed again from the original as long as the original is kept,
+for example until compaction.
 
-\paragraph{Lookahead.} The budget of a sample depends on evaluations up to
-one window after it, so the encoder must buffer the longest window; it fits
-compaction or a buffered proxy, not a zero-latency write path.
+\paragraph{Lookahead.} A sample's budget depends on evaluations up to one
+window after it, so the encoder must buffer the longest window. This works
+during compaction or in a buffering proxy, but not on a write path that
+must add no latency.
 
-\paragraph{Data.} Our real data come from two public demo servers: 13 series,
-with thresholds recalibrated to quantiles because the deployed ones never
-fire. Production traces with more rules, more incidents and gaps are needed.
+\paragraph{Data.} Our real data are 13 series from two public demo
+servers. The deployed thresholds never fire there, so we recalibrated the
+thresholds to quantiles. An evaluation on production traces with more
+rules, more incidents and gaps in the data is still needed.
 
-\paragraph{Relaxations.} Counting \textsf{Pending} periods makes the
-criterion strict. Preserving firings only, or firing times up to $\delta$,
-admits budgets above the margin on short condition flips (\code{for}
-filters them), at the cost of reasoning on the automaton rather than per
-evaluation. The min-composition in \eqref{eq:budget} is feasible but not
-optimal: for linear aggregates the optimal split of a margin between samples
-is a knapsack-like problem.
+\paragraph{Relaxations.} Requiring the same \textsf{Pending} periods makes
+the criterion strict. If only firings had to be preserved, or firing times
+up to $\delta$, the budget could exceed the margin on short condition
+flips, since \code{for} filters them out. The analysis would then have to
+reason about the automaton instead of single evaluations. The minimum in
+\eqref{eq:budget} gives a feasible budget but not an optimal one. For
+linear aggregates, the optimal split of a margin among the samples of a
+window is a knapsack-like problem.
 
 \section{Conclusion}
 
-Taking alert decisions as the correctness criterion turns lossy
-compression of monitoring data into a problem with a sound, computable,
-per-sample budget. Monotonicity of the aggregates makes the budget
-one-sided, and a coder that can keep its prediction whenever it is still on
-the admissible side converts that into a 2.4--2.5$\times$ smaller
-output than the symmetric Lipschitz box. On
-real Prometheus series the result is a few tenths to a few bits per value
-with every alert decision unchanged.
+With alert decisions as the correctness criterion, lossy compression of
+monitoring data has a sound per-sample error budget that can be computed
+in linear time. The aggregates are monotone, so the budget is one-sided.
+A coder that keeps its prediction whenever it is still admissible turns
+this into an output 2.4--2.5 times smaller than with the symmetric
+Lipschitz box. On real Prometheus series the codec needs from a few
+tenths of a bit to a few bits per value, and no alert decision changes.

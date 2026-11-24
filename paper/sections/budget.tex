@@ -3,22 +3,24 @@
 
 \subsection{A sufficient condition}
 
-For a protected evaluation $(R,t)$ with non-empty support let the margin be
-$m_R(t) = |f_R(X)(t) - \theta|$ and let $L_R(t)$ be a Lipschitz constant of
-$F$ on $\mathbb{R}^{|S_R(t)|}$ in the sup norm. \code{last},
-\code{avg\_over\_time}, \code{min\_over\_time} and \code{max\_over\_time} have
-$L = 1$; \code{sum\_over\_time} has $L = |S_R(t)|$. The tolerance of the
-evaluation is $\tau_R(t) = m_R(t)/L_R(t)$ and the budget of sample $i$ is
-the minimum over every evaluation that reads it:
+Consider a protected evaluation $(R,t)$ with a non-empty support. Its
+\emph{margin} $m_R(t) = |f_R(X)(t) - \theta|$ is the distance of the
+aggregate from the threshold. Let $L_R(t)$ be a Lipschitz constant of $F$
+on $\mathbb{R}^{|S_R(t)|}$ in the sup norm. For \code{last},
+\code{avg\_over\_time}, \code{min\_over\_time} and \code{max\_over\_time}
+we have $L = 1$, and for \code{sum\_over\_time} $L = |S_R(t)|$. The
+\emph{tolerance} of the evaluation is $\tau_R(t) = m_R(t)/L_R(t)$. A sample
+is read by every evaluation whose support contains it, and its budget is
+the smallest tolerance among them:
 \begin{equation}
   \eps_i = \min\{\tau_R(t) : R \in \R,\ t \in P_R,\ i \in S_R(t)\},
   \qquad \min\emptyset = +\infty .
   \label{eq:budget}
 \end{equation}
 
-The condition is $f_R(X)(t) \bowtie \theta$ or its negation, so on the
-original data it is one of $f > \theta$, $f \ge \theta$, $f < \theta$,
-$f \le \theta$. Two properties of this inequality matter below.
+On the original data the condition is $f_R(X)(t) \bowtie \theta$ or its
+negation, so it is one of $f > \theta$, $f \ge \theta$, $f < \theta$ and
+$f \le \theta$. Two properties of this inequality are used below.
 
 \begin{definition}[Tight, upper and lower evaluations]
 \label{def:tight}
@@ -32,9 +34,9 @@ the side of $\theta$ that only a decrease of the aggregate can leave
 ${\bowtie} \in \{<,\le\}$), and \emph{lower} otherwise.
 \end{definition}
 
-We call the set of reconstructions
-$\{Y : |y_i - x_i| \le \eps_i \text{ for all } i \in I\}$ the
-\emph{box budget}: it bounds every error symmetrically.
+The \emph{box budget} is the set of reconstructions
+$\{Y : |y_i - x_i| \le \eps_i \text{ for all } i \in I\}$. It bounds the
+error of each sample by the same amount in both directions.
 
 \begin{theorem}[Box budget]
 \label{thm:budget}
@@ -50,22 +52,25 @@ strictly when tight, so $f_R(Y)(t)$ stays on the same side of $\theta$.
 \Cref{lem:phase,lem:automaton} finish the proof.
 \end{proof}
 
-The Lipschitz step is ordinary quantity-of-interest error
-propagation~\cite{jiao2022qoi}. What is specific is the granularity: errors
-live on samples and margins on evaluations, and one sample feeds every
-evaluation whose window contains it, so the budget is a minimum over
-overlapping windows. Two consequences follow. A streaming encoder needs a
-lookahead of the longest window $\max_R w_R$, so the natural deployment point
-is block compaction (Prometheus compacts 2-hour blocks) or a buffered proxy.
-And a sample at margin zero must be exact. Since any smaller budget is also
-sufficient, a pointwise cap $\min(\eps_i, \eps_{\max})$ adds a fidelity
-guarantee for dashboards without weakening the alert guarantee.
+The Lipschitz step is standard quantity-of-interest error
+propagation~\cite{jiao2022qoi}. Our setting differs in where errors and
+margins live: errors belong to samples, margins belong to evaluations, and
+each sample is read by every evaluation whose window contains it. The
+budget is therefore a minimum over overlapping windows, which has two
+consequences. First, an encoder must look ahead by the longest window
+$\max_R w_R$ before it can fix a sample's budget, so it fits block
+compaction (Prometheus compacts 2-hour blocks) or a buffering proxy better
+than the write path. Second, a sample with margin zero must be stored
+exactly. Any smaller budget is also sufficient, so a pointwise cap
+$\min(\eps_i, \eps_{\max})$ can bound the error for dashboards without
+weakening the alert guarantee.
 
 \subsection{One-sided budget}
 
-The box budget of \cref{thm:budget} is pessimistic: near a threshold a series
-mostly lies on one side, and only errors towards $\theta$ can flip a
-decision.
+Near a threshold a series usually stays on one side of it, and only an
+error towards $\theta$ can change a decision. The box budget of
+\cref{thm:budget} also limits errors away from $\theta$, which is not
+necessary.
 
 \begin{corollary}[One-sided budget]
 \label{cor:onesided}
@@ -84,11 +89,12 @@ $|z_i - x_i| \le \delta^-_i \le \tau_R(t)$, so $z$ satisfies
 upper side. Lower evaluations are symmetric with $\max$.
 \end{proof}
 
-Since $\eps_i = \min(\delta^-_i, \delta^+_i)$, the box budget is contained in the
-one-sided set, and the difference is large: a sample read only by upper
-evaluations may move up without limit (\cref{fig:budget}). The coder exploits it only if it can
-place reconstructions asymmetrically (\cref{sec:codec}); the ablation shows
-that the one-sided budget alone, with round-to-nearest, gains little
+Since $\eps_i = \min(\delta^-_i, \delta^+_i)$, every reconstruction in the
+box budget also satisfies the one-sided bounds. The one-sided set is much
+larger: a sample read only by upper evaluations may move up by any amount
+(\cref{fig:budget}). The codec can use this freedom only if it places
+reconstructions asymmetrically (\cref{sec:codec}). With round-to-nearest
+quantization, the one-sided budget alone gains little
 (\cref{sec:ablation}).
 
 \begin{figure}[t]
@@ -97,9 +103,9 @@ that the one-sided budget alone, with round-to-nearest, gains little
 \caption{One-sided budget and the codec's reconstruction on two hours of
 \code{node\_load1} (7-day snapshot, rule \code{last > }$\theta$ with $\theta$
 at the 95th percentile). Below $\theta$ only the upward error is bounded,
-above it only the downward one, so the admissible interval (shaded) is a
-half-line and the reconstruction collapses to two levels; every alert
-decision is unchanged.}
+and above $\theta$ only the downward error. The admissible interval
+(shaded) is therefore a half-line, and the reconstruction takes only two
+levels. No alert decision changes.}
 \label{fig:budget}
 \end{figure}
 
@@ -119,12 +125,12 @@ support $S_R(t)$. The rule reads:
     by the samples;
   \item the \emph{extrapolation distances} $h_{\mathrm{s}}$ and
     $h_{\mathrm{e}}$ from the first and last sample to the window's start
-    $t - w$ and end $t$, each replaced by half the mean sample spacing
-    when it reaches $1.1$ times that spacing; they depend on timestamps
+    $t - w$ and end $t$. Each is replaced by half the mean sample spacing
+    when it reaches $1.1$ times that spacing. Both depend on timestamps
     only;
-  \item the \emph{zero distance} $h_0 = \sigma x_f / \Delta$, the time
-    before $s_f$ at which a counter growing at the window's average speed
-    was zero (used only when $\Delta > 0$).
+  \item the \emph{zero distance} $h_0 = \sigma x_f / \Delta$, used only
+    when $\Delta > 0$. It is how long before $s_f$ the counter was zero if
+    it grew at the window's average speed.
 \end{itemize}
 The increase is extrapolated to the window boundaries, but not past the
 counter's zero point, and divided by the range in seconds:
@@ -135,53 +141,62 @@ counter's zero point, and divided by the range in seconds:
 
 \begin{proposition}
 \label{prop:rate}
-(a) The reset indicator $[x_i < x_{i-1}]$ is a comparison of two samples, so
-an arbitrarily small error can create a reset and change $\Delta$ by a whole
-counter value; no positive symmetric budget preserves \code{rate} in general.
-(b) The closed-loop floor quantizer
-$y_i = y_{i-1} + q\lfloor (x_i - y_{i-1})/q\rfloor$ (exact when the step
-count would be negative) gives $x_i - q < y_i \le x_i$ and preserves
-$x_i \ge x_{i-1} \Rightarrow y_i \ge y_{i-1}$; keeping the two samples
-around each true reset exact preserves the reset set.
-(c) On the reset-preserving set, $\mathrm{rate}$ is Lipschitz in
-$(\Delta, x_f)$ away from $x_f = 0$, with constant
-$\approx (2 + r)/w$ for a densely sampled window with $r$ resets.
-(d) Under (b), $\Delta$ and $x_f$ read only the window's first and last
-samples and the preserved reset values, so the budget of a \code{rate}
-evaluation applies to the two ends of its window only.
+\leavevmode
+\begin{enumerate}
+  \item[(a)] The reset indicator $[x_i < x_{i-1}]$ compares two samples. An
+    arbitrarily small error can therefore create a reset and change
+    $\Delta$ by a whole counter value, and in general no positive
+    symmetric budget preserves \code{rate}.
+  \item[(b)] The closed-loop floor quantizer
+    $y_i = y_{i-1} + q\lfloor (x_i - y_{i-1})/q\rfloor$, which stores the
+    sample exactly when the step count would be negative, gives
+    $x_i - q < y_i \le x_i$ and preserves
+    $x_i \ge x_{i-1} \Rightarrow y_i \ge y_{i-1}$. If, in addition, the two
+    samples around each true reset are stored exactly, the set of resets
+    is preserved.
+  \item[(c)] On reconstructions that preserve the resets, $\mathrm{rate}$ is
+    Lipschitz in $(\Delta, x_f)$ away from $x_f = 0$. For a densely
+    sampled window with $r$ resets the constant is about $(2 + r)/w$.
+  \item[(d)] Under (b), $\Delta$ and $x_f$ depend only on the first and last
+    samples of the window and on the preserved reset values. The budget
+    of a \code{rate} evaluation therefore applies only to the two ends of
+    its window.
+\end{enumerate}
 \end{proposition}
 
-The implementation does not use the constant in (c): it computes a sound
-interval enclosure of the \code{rate} formula over the box
-$y_i \in [x_i - \eps, x_i]$, including the zero-point branch, and finds the
-largest safe $\eps$ by bisection. By (d), with a 30\,s evaluation grid on
-15\,s scrapes about half of a counter's samples are no window's end and are
-constrained only by monotonicity.
+The implementation does not use the constant from (c). It computes a
+sound interval enclosure of the \code{rate} formula, including the
+zero-point branch, over the box $y_i \in [x_i - \eps, x_i]$, and finds the
+largest safe $\eps$ by bisection. With a 30\,s evaluation grid and 15\,s
+scrapes, about half of a counter's samples are not the end of any window.
+By (d), only monotonicity constrains them.
 
 \subsection{Where no budget exists}
 
-A positive budget exists at $x$ iff $x$ is interior to the set of inputs
-with the same condition. Equality tests, \code{changes()}, \code{floor} and
-\code{round} inside expressions, and label-selecting aggregations
-(\code{topk}) violate this at their decision points and need exact samples
-there; ratios and \code{histogram\_quantile} are locally Lipschitz and need
-an interval enclosure like \code{rate}.
+A positive budget exists at $x$ if and only if $x$ lies in the interior of
+the set of inputs that give the same condition. Some expressions break this
+at their decision points: equality tests, \code{changes()}, \code{floor}
+and \code{round} inside an expression, and aggregations that select series
+by label, such as \code{topk}. They need exact samples at those points.
+Ratios and \code{histogram\_quantile} are locally Lipschitz and can be
+handled with an interval enclosure, as for \code{rate}.
 
 \subsection{Floating point and complexity}
 
-The budget is computed in floating point. The code subtracts a rounding
-slack from the margin: a floating-point sum of $n$ terms has error at most
-$\gamma_{n-1}\sum_i|v_i|$ with $\gamma_n = nu/(1 - nu)$ and unit roundoff
-$u = 2^{-53}$~\cite{higham2002accuracy}.
-The code also uses the next representable value below the tolerance for strict
-comparisons. Monotonicity holds bitwise for \code{last}, \code{min} and
-\code{max}; Prometheus sums with Kahan compensation, which is not monotone,
-so for \code{sum/avg} \cref{cor:onesided} goes through the error bound
-instead, and an evaluation whose margin is within the rounding slack is
+The budget is computed in floating point, and the code subtracts a
+rounding slack from the margin. A floating-point sum of $n$ terms has error
+at most $\gamma_{n-1}\sum_i|v_i|$, with $\gamma_n = nu/(1 - nu)$ and unit
+roundoff $u = 2^{-53}$~\cite{higham2002accuracy}. For strict comparisons
+the code takes the next representable value below the tolerance.
+Monotonicity holds bitwise for \code{last}, \code{min} and \code{max}.
+Prometheus computes sums with Kahan compensation, which is not monotone, so
+for \code{sum/avg} the proof of \cref{cor:onesided} uses the error bound
+instead. An evaluation whose margin is within the rounding slack is
 constrained in both directions.
 
-Supports are monotone in $t$, so all supports follow by two pointers, window
-aggregates by a two-stacks sliding queue, and the per-sample minimum in
-\eqref{eq:budget} is a sliding minimum over instants (monotone deque). The
-budget costs $O(n + |P_R|)$ per rule; \code{rate} adds a bisection of about
-a dozen enclosure evaluations per instant.
+Supports move monotonically with $t$, so two pointers find all of them. A
+two-stack sliding queue computes the window aggregates, and a monotone
+deque computes the per-sample minimum in \eqref{eq:budget} as a sliding
+minimum over instants. The budget costs $O(n + |P_R|)$ per rule. For
+\code{rate}, each instant adds a bisection of about a dozen enclosure
+evaluations.

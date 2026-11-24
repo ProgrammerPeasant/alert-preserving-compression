@@ -1,88 +1,100 @@
 \section{Codec}
 \label{sec:codec}
 
-The codec turns per-sample bounds $(\delta^-_i, \delta^+_i)$ into a
-bit stream whose decoded values lie in the \emph{admissible interval}
+The codec takes the per-sample bounds $(\delta^-_i, \delta^+_i)$ and
+produces a bit stream whose decoded values lie in the \emph{admissible
+interval}
 \[
   A_i = [\,x_i - \delta^-_i,\ x_i + \delta^+_i\,].
-\] A budget of zero (or NaN)
-forces an exact sample; $+\infty$ leaves it unconstrained. The format does
-not depend on the rules: the decoder sees only the stream.
+\]
+A budget of zero (or NaN) forces the sample to be stored exactly, and a
+budget of $+\infty$ leaves it unconstrained. The stream format does not
+depend on the rules, and the decoder reads only the stream.
 
 \paragraph{Quantizer.} The lossy mode is closed-loop DPCM (differential
 pulse-code modulation) on a grid of step $q = 2^e$. The prediction for
-sample $i$ is the previous \emph{reconstruction}, $p_i = y_{i-1}$, not the
-previous original value, so encoder and decoder predict identically and
-errors do not accumulate. The reconstruction is $y_i = p_i + k_i q$ with
-an integer \emph{step count} $k_i$, chosen from the admissible counts
+sample $i$ is the previous \emph{reconstruction}, $p_i = y_{i-1}$. Because
+the prediction does not use the original values, the encoder and the
+decoder compute the same prediction and errors do not accumulate. The
+reconstruction is $y_i = p_i + k_i q$, where the integer \emph{step count}
+$k_i$ is chosen from the admissible counts
 \[
-  K_i = \{\, k \in \mathbb{Z} : p_i + kq \in A_i \,\},
+  K_i = \{\, k \in \mathbb{Z} : p_i + kq \in A_i \,\}.
 \]
-which is non-empty whenever $q \le \delta^-_i + \delta^+_i$. The stream
-stores either $k_i$ or its delta $k_i - k_{i-1}$.
+This set is non-empty whenever $q \le \delta^-_i + \delta^+_i$. The stream
+stores either $k_i$ or the difference $k_i - k_{i-1}$.
 
-\paragraph{Blocks.} The series is cut into blocks of 128 samples. For each
-block the encoder picks the cheapest of (i) lossless Gorilla XOR
-coding~\cite{pelkonen2015gorilla} and (ii) the quantizer above with one
-exponent $e$ per block. The candidate exponents are, for each sample
-of the block, the largest $e$ with $2^e \le \delta^-_i + \delta^+_i$ (so
-that $K_i \ne \emptyset$; $2^e \le \delta^-_i$ for a counter), plus the three next finer grids, because the
-coded size is not monotone in the step on discrete data; samples whose
-interval the chosen grid may miss are escaped (below). For a counter the
-quantizer is the floor quantizer of \cref{prop:rate}(b), which keeps the
-reconstruction below the data and non-decreasing. A sample whose step count
-would exceed $2^{50}$ in magnitude, or whose reconstruction misses $A_i$ in
-floating point, is \emph{escaped}: stored as a raw 64-bit value.
-The encoder checks every
-reconstructed value against its bounds, so the bound holds for the actual
-floating-point output, bit for bit as the decoder computes it.
+\paragraph{Blocks.} The series is split into blocks of 128 samples, and
+each block is coded either losslessly with Gorilla XOR
+coding~\cite{pelkonen2015gorilla} or with the quantizer above, using one
+exponent $e$ for the whole block. The encoder picks whichever is cheaper.
+Each sample of the block proposes a candidate exponent: the largest $e$
+with $2^e \le \delta^-_i + \delta^+_i$, so that $K_i \ne \emptyset$ (for a
+counter, $2^e \le \delta^-_i$). The encoder also tries the three next
+finer grids, because on discrete data a smaller step can give a smaller
+stream. For a counter the quantizer is the floor quantizer of
+\cref{prop:rate}(b), which keeps the reconstruction below the data and
+non-decreasing.
+
+A sample is \emph{escaped}, that is, stored as a raw 64-bit value, if its
+step count would exceed $2^{50}$ in magnitude or if its reconstruction
+misses $A_i$ in floating point. This also covers samples whose interval is
+too narrow for the block's grid. The encoder checks every reconstructed
+value against its bounds, computed bit for bit as the decoder will compute
+it, so the bounds hold for the actual floating-point output.
 
 \paragraph{Lazy steps.} The \emph{nearest} choice
-$k_i = \mathrm{round}((x_i - p_i)/q)$ produces unbiased errors, which suits
-a symmetric bound but wastes an asymmetric one. For every grid the encoder
-also tries the \emph{lazy} choice: the $k \in K_i$ closest to zero (so
-$y_i = p_i$ whenever the prediction is admissible) or closest to
-$k_{i-1}$. With one-sided bounds the prediction stays
-admissible for long runs, which the entropy coder turns into a few hundredths
-of a bit per sample. Four strategies (nearest or lazy, coding counts or deltas)
-are compared per block by exact coded cost.
+$k_i = \mathrm{round}((x_i - p_i)/q)$ spreads errors evenly in both
+directions. This suits a symmetric bound, but wastes most of an asymmetric
+one. For every grid the encoder therefore also tries the \emph{lazy}
+choice, the $k \in K_i$ closest to zero (so $y_i = p_i$ whenever the
+prediction is admissible) or closest to $k_{i-1}$. With one-sided bounds
+the prediction often stays admissible for long runs of samples, and the
+entropy coder codes such runs at a few hundredths of a bit per sample. Per
+block, the encoder compares four strategies (nearest or lazy, combined
+with coding counts or differences) by their exact coded size.
 
-\paragraph{Entropy coding.} Every block decision and residual is coded with
-an LZMA-style adaptive binary range coder~\cite{martin1979range} with 15-bit
-probabilities: each coded integer (step count or delta) is sent as a zero flag,
-a sign and its bit length in unary, modelled in a context given by the
-previous integer's magnitude, then its leading bit below the top one
-(modelled) and the remaining bits (raw). Model rates
-start fast and slow down with a count-based schedule, so short streams adapt
-quickly. A fixed-width variant, storing each block's integers with the
-block's maximal bit length, is kept for the ablation.
+\paragraph{Entropy coding.} Every block decision and every integer is
+coded with an LZMA-style adaptive binary range coder~\cite{martin1979range}
+with 15-bit probabilities. An integer (a step count or a difference) is
+sent as a zero flag, a sign and its bit length in unary. These symbols are
+modelled in a context given by the magnitude of the previous integer.
+Then come the bit just below the leading one, which is also modelled, and
+the remaining bits, which are written raw. The models adapt quickly at the
+start of a stream and more slowly as their counts grow, so short streams
+also compress well. For the ablation we keep a fixed-width variant that
+stores the integers of a block with the block's largest bit length.
 
-\paragraph{Chunks.} Prometheus cuts head chunks at 120 samples, and each must
-decode on its own. The series can be coded as independent streams with 3--4
-bytes of overhead each. The budget is still planned on the whole series,
-since windows cross chunk boundaries. Counter chunks continue the previous
-chunk's reconstruction as a floor, otherwise the output could drop at a
-boundary and \code{rate} would see a spurious reset.
+\paragraph{Chunks.} Prometheus cuts head chunks at 120 samples, and each
+chunk must decode on its own. The codec can code the series as
+independent streams, at 3--4 bytes of overhead per stream. The budget is
+still computed on the whole series, because windows cross chunk
+boundaries. A counter chunk starts from the previous chunk's last
+reconstruction as a floor. Otherwise the output could drop at a chunk
+boundary, and \code{rate} would see a reset that is not in the data.
 
-\paragraph{Verify and repair.} After encoding, the reconstruction is decoded
-and every protected condition is re-evaluated with the reference semantics.
-On any evaluation that flipped, the budget on its support is zeroed and the
-series re-encoded. The loop terminates because an all-exact support reads the
-original values. For \code{sum/avg} the verifier (sliding sum), the
-reference evaluator (left-to-right) and Prometheus (Kahan) sum in different
-orders, which differ by at most $2\gamma_{n-1}\sum|y_i|$ (\cref{sec:budget}); the verifier
-therefore accepts an evaluation only if it lies farther than that from
-$\theta$, or its support is bitwise exact. The analytic budget keeps twice
-this margin and has needed no repair on any dataset; the loop makes the
-guarantee end to end against the reference evaluator.
+\paragraph{Verify and repair.} After encoding, the codec decodes the
+stream and re-evaluates every protected condition with the reference
+semantics. For every evaluation whose condition changed, it sets the
+budget of the evaluation's support to zero and encodes the series again.
+The loop terminates, because a support stored exactly gives the original
+values. For \code{sum/avg}, three components sum in different orders: the
+verifier uses a sliding sum, the reference evaluator sums left to right,
+and Prometheus uses Kahan summation. Their results differ by at most
+$2\gamma_{n-1}\sum|y_i|$ (\cref{sec:budget}). The verifier therefore
+accepts an evaluation only if its aggregate is farther than this from
+$\theta$ or its support is bitwise exact. The analytic budget keeps twice
+this margin and has not needed a repair on any dataset. The loop makes the
+guarantee hold end to end with respect to the reference evaluator.
 
-\paragraph{Optimistic budget.} The bounds of \cref{cor:onesided} hold for the
-worst case of all errors at once; in window aggregates actual errors mostly
-cancel. The encoder may start from $\kappa\delta^\pm_i$ with $\kappa > 1$:
-on every flipped evaluation the budget on its support is halved, never below
-the analytic budget, and zeroed once there. A support within the analytic
-budget cannot flip (\cref{thm:budget}), so the analytic budget is both the
-sound starting point at $\kappa = 1$ and the floor that bounds the number of
-rounds. This is the codec-side counterpart of the correction approach of
-Compression Safeguards~\cite{tyree2026safeguards}, restricted to the
-supports that actually flipped.
+\paragraph{Optimistic budget.} The bounds of \cref{cor:onesided} assume
+that all errors take their worst values at once, while in a window
+aggregate the actual errors mostly cancel. The encoder can therefore start
+from $\kappa\delta^\pm_i$ with $\kappa > 1$. On every evaluation that
+changes, it halves the budget of the support, stopping at the analytic
+budget, and sets it to zero once it has reached the analytic budget. By
+\cref{thm:budget}, a support within the analytic budget cannot change its
+evaluation. The analytic budget is therefore both the sound starting point
+for $\kappa = 1$ and the floor that bounds the number of rounds. Compression
+Safeguards~\cite{tyree2026safeguards} correct violations in a similar way,
+but our encoder corrects only the supports whose evaluations changed.
